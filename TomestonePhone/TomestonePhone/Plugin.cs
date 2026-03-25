@@ -31,6 +31,8 @@ public sealed class Plugin : IDalamudPlugin
         IFramework framework)
     {
         this.configuration = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        this.configuration.NormalizeServerBaseUrl();
+        pluginInterface.SavePluginConfig(this.configuration);
 
         this.service = new Service
         {
