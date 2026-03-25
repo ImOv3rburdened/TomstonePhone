@@ -45,8 +45,8 @@ The backend is ready for local hosting, Docker, or Coolify deployment. It stores
 
 ## Runtime Files
 
-- Web portal: `http://localhost:8080/`
-- Health endpoint: `http://localhost:8080/health`
+- Web portal: `http://localhost:5050/`
+- Health endpoint: `http://localhost:5050/health`
 - Bundled SVG assets: `E:\Github\TomstonePhone\images`
 
 ## MariaDB
@@ -107,5 +107,6 @@ Expected alert payload:
 ```
 
 When received, the backend suspends the account, records an audit log, opens a moderation support ticket, and IP-bans the reported IP when one is provided.
+
 
 

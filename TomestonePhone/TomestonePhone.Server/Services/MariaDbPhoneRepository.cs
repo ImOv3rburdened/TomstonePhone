@@ -31,6 +31,18 @@ public sealed class MariaDbPhoneRepository : IPhoneRepository
         this.bootstrapOwner = bootstrapOwner.Value;
     }
 
+    public async Task InitializeAsync(CancellationToken cancellationToken = default)
+    {
+        await this.gate.WaitAsync(cancellationToken);
+        try
+        {
+            await this.EnsureInitializedAsync(cancellationToken);
+        }
+        finally
+        {
+            this.gate.Release();
+        }
+    }
     public async Task<T> ReadAsync<T>(Func<PersistedAppState, T> action, CancellationToken cancellationToken = default)
     {
         await this.gate.WaitAsync(cancellationToken);
@@ -143,3 +155,5 @@ public sealed class MariaDbPhoneRepository : IPhoneRepository
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 }
+
+

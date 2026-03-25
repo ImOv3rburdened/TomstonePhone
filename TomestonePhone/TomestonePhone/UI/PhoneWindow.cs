@@ -39,11 +39,6 @@ public sealed class PhoneWindow : Window
     private ConversationDetail? selectedConversationDetail;
     private string composeMessage = string.Empty;
     private string composeEmbedUrl = string.Empty;
-    private bool showGifPicker;
-    private bool showGifSetupModal;
-    private string gifSearchQuery = string.Empty;
-    private IReadOnlyList<GiphyGifResult> gifResults = [];
-    private bool showingGifFavorites;
     private string directMessageTarget = string.Empty;
     private string friendRequestTarget = string.Empty;
     private string friendRequestMessage = string.Empty;
@@ -62,12 +57,12 @@ public sealed class PhoneWindow : Window
         this.client = client;
         this.gifEmbedRenderer = new GifEmbedRenderer(service.TextureProvider);
         this.Flags = ImGuiWindowFlags.NoCollapse;
-        this.Size = new Vector2(480, 640);
+        this.Size = new Vector2(440, 952);
         this.SizeCondition = ImGuiCond.FirstUseEver;
         this.SizeConstraints = new WindowSizeConstraints
         {
-            MinimumSize = new Vector2(320, 426.67f),
-            MaximumSize = new Vector2(1200, 1600),
+            MinimumSize = new Vector2(360, 779f),
+            MaximumSize = new Vector2(720, 1558f),
         };
         this.RespectCloseHotkey = true;
     }
@@ -92,7 +87,6 @@ public sealed class PhoneWindow : Window
         this.DrawNotifications();
         this.DrawLegalModal();
         this.DrawPrivacyModal();
-        this.DrawGifSetupModal();
         this.DrawExternalLinkWarningModal();
 
         using var root = ImRaii.Child("TomestonePhoneRoot", new Vector2(-1f, -1f), true);
@@ -111,7 +105,11 @@ public sealed class PhoneWindow : Window
             return;
         }
 
-        if (this.showHomeScreen)
+        if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+        {
+            this.DrawAuthStartScreen();
+        }
+        else if (this.showHomeScreen)
         {
             this.DrawHomeScreen();
         }
@@ -163,8 +161,112 @@ public sealed class PhoneWindow : Window
         ImGui.SameLine();
         ImGui.TextDisabled("88%");
         ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 6f);
-        ImGui.TextUnformatted(this.showHomeScreen ? this.state.CurrentProfile.DisplayName : this.activeTab.ToString());
+        if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+        {
+            ImGui.TextUnformatted("TomestonePhone");
+        }
+        else
+        {
+            ImGui.TextUnformatted(this.showHomeScreen ? this.state.CurrentProfile.DisplayName : this.activeTab.ToString());
+        }
         ImGui.TextDisabled(this.pendingStatus);
+    }
+
+    private void DrawAuthStartScreen()
+    {
+        using var panel = ImRaii.Child("auth-start", new Vector2(-1f, -1f), false);
+        if (!panel.Success)
+        {
+            return;
+        }
+
+        ImGui.Dummy(new Vector2(0f, 10f));
+        ImGui.TextUnformatted("Welcome");
+        ImGui.TextWrapped("Sign in or create your TomestonePhone account before using apps, messages, or contacts.");
+        if (this.configuration.LocalAccountLockout)
+        {
+            ImGui.TextColored(new Vector4(0.95f, 0.45f, 0.45f, 1f), this.configuration.LocalAccountLockoutReason);
+        }
+
+        ImGui.Separator();
+        {
+            this.SaveConfiguration();
+        }
+
+        ImGui.Separator();
+        ImGui.TextDisabled("Account");
+        ImGui.InputText("Username", ref this.loginUsername, 64);
+        ImGui.InputText("Password", ref this.loginPassword, 64, ImGuiInputTextFlags.Password);
+
+        if (ImGui.Button("Register", new Vector2(120f, 32f)))
+        {
+            if (this.configuration.LocalAccountLockout)
+            {
+                this.pendingStatus = "This computer is locked";
+                return;
+            }
+
+            if (!this.HasAcceptedLocalTerms())
+            {
+                this.pendingStatus = "Accept the terms first";
+                ImGui.OpenPopup("TomestonePhone Legal Terms");
+                return;
+            }
+
+            try
+            {
+                var response = this.client.RegisterAsync(this.loginUsername, this.loginPassword).GetAwaiter().GetResult();
+                this.configuration.Username = response.Username;
+                this.configuration.AuthToken = response.AuthToken;
+                this.pendingStatus = "Account created";
+                this.RefreshSnapshot();
+                this.SaveConfiguration();
+                this.showHomeScreen = true;
+            }
+            catch (Exception ex)
+            {
+                this.HandleAuthFailure(ex);
+            }
+        }
+
+        ImGui.SameLine();
+
+        if (ImGui.Button("Login", new Vector2(120f, 32f)))
+        {
+            if (this.configuration.LocalAccountLockout)
+            {
+                this.pendingStatus = "This computer is locked";
+                return;
+            }
+
+            try
+            {
+                var response = this.client.LoginAsync(this.loginUsername, this.loginPassword).GetAwaiter().GetResult();
+                this.configuration.Username = response.Username;
+                this.configuration.AuthToken = response.AuthToken;
+                this.pendingStatus = $"Signed in as {response.Username}";
+                this.RefreshSnapshot();
+                this.SaveConfiguration();
+                this.showHomeScreen = true;
+            }
+            catch (Exception ex)
+            {
+                this.HandleAuthFailure(ex);
+            }
+        }
+
+        ImGui.Separator();
+        if (ImGui.Button("Terms", new Vector2(96f, 30f)))
+        {
+            this.activeTab = PhoneTab.Legal;
+        }
+
+        ImGui.SameLine();
+
+        if (ImGui.Button("Privacy", new Vector2(96f, 30f)))
+        {
+            this.activeTab = PhoneTab.Privacy;
+        }
     }
 
     private void DrawHomeScreen()
@@ -228,8 +330,7 @@ public sealed class PhoneWindow : Window
             draw.AddText(new Vector2(badgeCenter.X - 6f, badgeCenter.Y - 8f), ImGui.GetColorU32(Vector4.One), badgeCount.ToString());
         }
 
-        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 80f);
-        if (ImGui.InvisibleButton($"{label}##open", new Vector2(width, 26f)))
+        if (ImGui.InvisibleButton($"{label}##open", new Vector2(width, 110f)))
         {
             this.showHomeScreen = false;
             this.activeTab = tab;
@@ -553,76 +654,17 @@ public sealed class PhoneWindow : Window
 
     private void DrawSettings()
     {
-        ImGui.TextDisabled("Phone Number");
-        if (ImGui.Selectable(this.state.CurrentProfile.PhoneNumber, false, ImGuiSelectableFlags.None, new Vector2(-1f, 24f)))
+        var isAuthenticated = !string.IsNullOrWhiteSpace(this.configuration.AuthToken);
+        if (!isAuthenticated)
         {
-            ImGui.SetClipboardText(this.state.CurrentProfile.PhoneNumber);
-            this.pendingStatus = "Phone number copied";
-        }
-        if (this.configuration.LocalAccountLockout)
-        {
-            ImGui.TextColored(new Vector4(0.95f, 0.45f, 0.45f, 1f), this.configuration.LocalAccountLockoutReason);
-        }
-        ImGui.Separator();
+            ImGui.TextDisabled("Account");
+            ImGui.TextWrapped("Create an account or sign in to start using TomestonePhone");
+            if (this.configuration.LocalAccountLockout)
+            {
+                ImGui.TextColored(new Vector4(0.95f, 0.45f, 0.45f, 1f), this.configuration.LocalAccountLockoutReason);
+            }
 
-        if (ImGui.Button("Terms", new Vector2(96f, 30f)))
-        {
-            this.activeTab = PhoneTab.Legal;
-            return;
-        }
-
-        ImGui.SameLine();
-
-        if (ImGui.Button("Privacy", new Vector2(96f, 30f)))
-        {
-            this.activeTab = PhoneTab.Privacy;
-            return;
-        }
-
-        ImGui.SameLine();
-
-        if (ImGui.Button("Log Out", new Vector2(96f, 30f)))
-        {
-            this.configuration.AuthToken = null;
-            this.configuration.Username = null;
-            this.pendingStatus = "Signed out";
-            this.SaveConfiguration();
-        }
-
-        ImGui.Separator();
-        ImGui.TextDisabled("App");
-        this.DrawEditableText("Base URL", this.configuration.ServerBaseUrl, value => this.configuration.ServerBaseUrl = value, 256);
-        this.DrawEditableText("Accent Color", this.configuration.AccentColorHex, value => this.configuration.AccentColorHex = value, 16);
-        ImGui.TextDisabled("GIFs");
-        ImGui.TextWrapped("Paste a direct .gif link into the message screen to send and display it inline");
-
-        var lockViewport = this.configuration.LockViewport;
-        if (ImGui.Checkbox("Lock viewport inside phone frame", ref lockViewport))
-        {
-            this.configuration.LockViewport = lockViewport;
-        }
-
-        if (ImGui.Button("Save", new Vector2(90f, 32f)))
-        {
-            this.SaveConfiguration();
-            this.pendingStatus = "Settings saved";
-        }
-
-        ImGui.SameLine();
-        this.DrawNotificationAnchorPicker();
-
-        ImGui.Separator();
-
-        ImGui.TextDisabled("Account");
-        var muted = this.state.CurrentProfile.NotificationsMuted;
-        if (ImGui.Checkbox("Mute notifications", ref muted) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
-        {
-            this.state.CurrentProfile = this.client.UpdateNotificationSettingsAsync(this.configuration.AuthToken, muted).GetAwaiter().GetResult();
-            this.pendingStatus = muted ? "Notifications muted" : "Notifications enabled";
-        }
-
-        if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
-        {
+            ImGui.Separator();
             ImGui.InputText("Username", ref this.loginUsername, 64);
             ImGui.InputText("Password", ref this.loginPassword, 64, ImGuiInputTextFlags.Password);
 
@@ -680,8 +722,97 @@ public sealed class PhoneWindow : Window
                     this.HandleAuthFailure(ex);
                 }
             }
+
+            ImGui.Separator();
+            {
+                this.SaveConfiguration();
+            }
+
+            ImGui.Separator();
+            if (ImGui.Button("Terms", new Vector2(96f, 30f)))
+            {
+                this.activeTab = PhoneTab.Legal;
+                return;
+            }
+
+            ImGui.SameLine();
+
+            if (ImGui.Button("Privacy", new Vector2(96f, 30f)))
+            {
+                this.activeTab = PhoneTab.Privacy;
+                return;
+            }
+
+            return;
         }
-        else if (ImGui.Button("Refresh Account", new Vector2(140f, 32f)))
+
+        ImGui.TextDisabled("Phone Number");
+        if (ImGui.Selectable(this.state.CurrentProfile.PhoneNumber, false, ImGuiSelectableFlags.None, new Vector2(-1f, 24f)))
+        {
+            ImGui.SetClipboardText(this.state.CurrentProfile.PhoneNumber);
+            this.pendingStatus = "Phone number copied";
+        }
+        if (this.configuration.LocalAccountLockout)
+        {
+            ImGui.TextColored(new Vector4(0.95f, 0.45f, 0.45f, 1f), this.configuration.LocalAccountLockoutReason);
+        }
+        ImGui.Separator();
+
+        if (ImGui.Button("Terms", new Vector2(96f, 30f)))
+        {
+            this.activeTab = PhoneTab.Legal;
+            return;
+        }
+
+        ImGui.SameLine();
+
+        if (ImGui.Button("Privacy", new Vector2(96f, 30f)))
+        {
+            this.activeTab = PhoneTab.Privacy;
+            return;
+        }
+
+        ImGui.SameLine();
+
+        if (ImGui.Button("Log Out", new Vector2(96f, 30f)))
+        {
+            this.configuration.AuthToken = null;
+            this.configuration.Username = null;
+            this.pendingStatus = "Signed out";
+            this.SaveConfiguration();
+            return;
+        }
+
+        ImGui.Separator();
+        ImGui.TextDisabled("App");
+        this.DrawEditableText("Accent Color", this.configuration.AccentColorHex, value => this.configuration.AccentColorHex = value, 16);
+        ImGui.TextDisabled("GIFs");
+        ImGui.TextWrapped("Paste a direct .gif link into the message screen to send and display it inline");
+
+        var lockViewport = this.configuration.LockViewport;
+        if (ImGui.Checkbox("Lock viewport inside phone frame", ref lockViewport))
+        {
+            this.configuration.LockViewport = lockViewport;
+        }
+
+        {
+            this.SaveConfiguration();
+        }
+
+        ImGui.SameLine();
+        this.DrawNotificationAnchorPicker();
+
+        ImGui.Separator();
+
+        ImGui.TextDisabled("Account");
+        var muted = this.state.CurrentProfile.NotificationsMuted;
+        if (ImGui.Checkbox("Mute notifications", ref muted))
+        {
+            this.state.CurrentProfile = this.client.UpdateNotificationSettingsAsync(this.configuration.AuthToken!, muted).GetAwaiter().GetResult();
+            this.pendingStatus = muted ? "Notifications muted" : "Notifications enabled";
+        }
+
+        if (ImGui.Button("Refresh Account", new Vector2(140f, 32f)))
         {
             this.RefreshSnapshot();
         }
@@ -691,9 +822,9 @@ public sealed class PhoneWindow : Window
         ImGui.InputText("Old Password", ref this.oldPassword, 64, ImGuiInputTextFlags.Password);
         ImGui.InputText("New Password", ref this.newPassword, 64, ImGuiInputTextFlags.Password);
         ImGui.InputText("Confirm New", ref this.confirmPassword, 64, ImGuiInputTextFlags.Password);
-        if (ImGui.Button("Update Password", new Vector2(160f, 32f)) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+        if (ImGui.Button("Update Password", new Vector2(160f, 32f)))
         {
-            var success = this.client.ChangePasswordAsync(this.configuration.AuthToken, new PasswordResetSelfRequest(this.oldPassword, this.newPassword, this.confirmPassword)).GetAwaiter().GetResult();
+            var success = this.client.ChangePasswordAsync(this.configuration.AuthToken!, new PasswordResetSelfRequest(this.oldPassword, this.newPassword, this.confirmPassword)).GetAwaiter().GetResult();
             this.pendingStatus = success ? "Password updated" : "Password update failed";
         }
 
@@ -713,9 +844,9 @@ public sealed class PhoneWindow : Window
 
             ImGui.TextUnformatted(blocked.DisplayName);
             ImGui.TextDisabled(blocked.Note);
-            if (ImGui.Button($"Unblock##{blocked.Id}", new Vector2(100f, 28f)) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+            if (ImGui.Button($"Unblock##{blocked.Id}", new Vector2(100f, 28f)))
             {
-                var success = this.client.UnblockAccountAsync(this.configuration.AuthToken, blocked.Id).GetAwaiter().GetResult();
+                var success = this.client.UnblockAccountAsync(this.configuration.AuthToken!, blocked.Id).GetAwaiter().GetResult();
                 if (success)
                 {
                     this.state.BlockedContacts.RemoveAll(item => item.Id == blocked.Id);
@@ -729,150 +860,6 @@ public sealed class PhoneWindow : Window
     {
         this.service.PluginInterface.SavePluginConfig(this.configuration);
     }
-
-    private void DrawGifPicker(Guid conversationId)
-    {
-        using var panel = ImRaii.Child("gif-picker", new Vector2(-1f, 178f), true);
-        if (!panel.Success)
-        {
-            return;
-        }
-
-        ImGui.InputTextWithHint("##gif-search", "Search GIFs", ref this.gifSearchQuery, 96);
-        ImGui.SameLine();
-        if (ImGui.Button("Search", new Vector2(70f, 28f)))
-        {
-            this.SearchGifs();
-        }
-
-        ImGui.SameLine();
-        if (ImGui.Button("Trending", new Vector2(78f, 28f)))
-        {
-            this.showingGifFavorites = false;
-            this.LoadTrendingGifs();
-        }
-
-        ImGui.SameLine();
-        if (ImGui.Button("Favorites", new Vector2(80f, 28f)))
-        {
-            this.showingGifFavorites = true;
-        }
-
-        ImGui.Separator();
-        using var results = ImRaii.Child("gif-results", new Vector2(-1f, -1f), false);
-        if (!results.Success)
-        {
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(this.configuration.GiphyApiKey))
-        {
-            ImGui.TextDisabled("Add a Giphy API key in Settings to search and send GIFs");
-            return;
-        }
-
-        if (this.showingGifFavorites)
-        {
-            if (this.configuration.GifFavorites.Count == 0)
-            {
-                ImGui.TextDisabled("No favorite GIFs yet");
-                return;
-            }
-
-            foreach (var favorite in this.configuration.GifFavorites)
-            {
-                this.DrawGifRow(conversationId, new GiphyGifResult(favorite.GifId, favorite.Title, favorite.GifUrl, favorite.PreviewUrl, favorite.GifUrl));
-            }
-
-            return;
-        }
-
-        if (this.gifResults.Count == 0)
-        {
-            ImGui.TextDisabled("No GIFs loaded");
-            return;
-        }
-
-        foreach (var gif in this.gifResults)
-        {
-            this.DrawGifRow(conversationId, gif);
-        }
-    }
-
-    private void DrawGifRow(Guid conversationId, GiphyGifResult gif)
-    {
-        using var row = ImRaii.Child($"gif-{gif.GifId}", new Vector2(-1f, 64f), true);
-        if (!row.Success)
-        {
-            return;
-        }
-
-        ImGui.TextUnformatted(gif.Title);
-        ImGui.TextDisabled(gif.GifUrl);
-        if (ImGui.Button($"Send##{gif.GifId}", new Vector2(64f, 26f)))
-        {
-            this.SendGif(conversationId, gif);
-        }
-
-        ImGui.SameLine();
-        var isFavorite = this.configuration.GifFavorites.Any(item => item.GifId == gif.GifId);
-        if (ImGui.Button(isFavorite ? $"Saved##{gif.GifId}" : $"Save##{gif.GifId}", new Vector2(64f, 26f)))
-        {
-            if (isFavorite)
-            {
-                this.configuration.GifFavorites.RemoveAll(item => item.GifId == gif.GifId);
-                this.pendingStatus = "GIF removed from favorites";
-            }
-            else
-            {
-                this.configuration.GifFavorites.Insert(0, new GifFavorite
-                {
-                    GifId = gif.GifId,
-                    Title = gif.Title,
-                    GifUrl = gif.GifUrl,
-                    PreviewUrl = gif.PreviewUrl,
-                });
-                this.pendingStatus = "GIF saved";
-            }
-
-            this.SaveConfiguration();
-        }
-    }
-
-    private void SearchGifs()
-    {
-        if (string.IsNullOrWhiteSpace(this.gifSearchQuery))
-        {
-            this.LoadTrendingGifs();
-            return;
-        }
-
-        try
-        {
-            this.showingGifFavorites = false;
-            this.gifResults = this.giphyClient.SearchAsync(this.configuration.GiphyApiKey, this.gifSearchQuery, this.configuration.GiphyRating, 18).GetAwaiter().GetResult();
-            this.pendingStatus = this.gifResults.Count == 0 ? "No GIFs found" : $"Loaded {this.gifResults.Count} GIFs";
-        }
-        catch (Exception ex)
-        {
-            this.pendingStatus = ex.Message;
-        }
-    }
-
-    private void LoadTrendingGifs()
-    {
-        try
-        {
-            this.showingGifFavorites = false;
-            this.gifResults = this.giphyClient.GetTrendingAsync(this.configuration.GiphyApiKey, this.configuration.GiphyRating, 18).GetAwaiter().GetResult();
-            this.pendingStatus = this.gifResults.Count == 0 ? "No trending GIFs found" : "Trending GIFs loaded";
-        }
-        catch (Exception ex)
-        {
-            this.pendingStatus = ex.Message;
-        }
-    }
-
     private void SendComposedMessage(Guid conversationId)
     {
         if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
@@ -1367,13 +1354,13 @@ public sealed class PhoneWindow : Window
 
         var center = ImGui.GetMainViewport().GetCenter();
         ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
-        ImGui.SetNextWindowSize(new Vector2(520f, 420f), ImGuiCond.Appearing);
+        ImGui.SetNextWindowSize(new Vector2(620f, 560f), ImGuiCond.Appearing);
 
         if (ImGui.BeginPopupModal("TomestonePhone Legal Terms", ImGuiWindowFlags.NoResize))
         {
             ImGui.TextWrapped(LegalTerms.Summary);
             ImGui.Separator();
-            using var child = ImRaii.Child("legal-scroll", new Vector2(0f, 250f), true);
+            using var child = ImRaii.Child("legal-scroll", new Vector2(0f, 390f), true);
             if (child.Success)
             {
                 ImGui.TextWrapped(LegalTerms.FullText);
@@ -1408,13 +1395,13 @@ public sealed class PhoneWindow : Window
 
         var center = ImGui.GetMainViewport().GetCenter();
         ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
-        ImGui.SetNextWindowSize(new Vector2(520f, 420f), ImGuiCond.Appearing);
+        ImGui.SetNextWindowSize(new Vector2(620f, 560f), ImGuiCond.Appearing);
 
         if (ImGui.BeginPopupModal("TomestonePhone Privacy Policy", ImGuiWindowFlags.NoResize))
         {
             ImGui.TextWrapped(PrivacyPolicy.Summary);
             ImGui.Separator();
-            using var child = ImRaii.Child("privacy-scroll", new Vector2(0f, 250f), true);
+            using var child = ImRaii.Child("privacy-scroll", new Vector2(0f, 390f), true);
             if (child.Success)
             {
                 ImGui.TextWrapped(PrivacyPolicy.FullText);
@@ -1433,56 +1420,6 @@ public sealed class PhoneWindow : Window
             ImGui.EndPopup();
         }
     }
-
-    private void DrawGifSetupModal()
-    {
-        if (this.showGifSetupModal)
-        {
-            ImGui.OpenPopup("TomestonePhone GIF Setup");
-        }
-
-        var center = ImGui.GetMainViewport().GetCenter();
-        ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
-        ImGui.SetNextWindowSize(new Vector2(520f, 320f), ImGuiCond.Appearing);
-
-        if (ImGui.BeginPopupModal("TomestonePhone GIF Setup", ImGuiWindowFlags.NoResize))
-        {
-            this.showGifSetupModal = false;
-            ImGui.TextWrapped("GIF search uses each player's own Giphy API key");
-            ImGui.Separator();
-            ImGui.TextWrapped("1. Go to the Giphy developer dashboard");
-            ImGui.TextWrapped("2. Create your own app");
-            ImGui.TextWrapped("3. Copy the API key they give you");
-            ImGui.TextWrapped("4. Paste it into Settings under Your Giphy API Key");
-            ImGui.Separator();
-            ImGui.TextWrapped(GiphyCreateAppUrl);
-
-            if (ImGui.Button("Copy Link", new Vector2(100f, 30f)))
-            {
-                ImGui.SetClipboardText(GiphyCreateAppUrl);
-                this.pendingStatus = "Giphy signup link copied";
-            }
-
-            ImGui.SameLine();
-
-            if (ImGui.Button("Open Settings", new Vector2(120f, 30f)))
-            {
-                this.activeTab = PhoneTab.Settings;
-                this.showHomeScreen = false;
-                ImGui.CloseCurrentPopup();
-            }
-
-            ImGui.SameLine();
-
-            if (ImGui.Button("Close", new Vector2(90f, 30f)))
-            {
-                ImGui.CloseCurrentPopup();
-            }
-
-            ImGui.EndPopup();
-        }
-    }
-
     private void DrawExternalLinkWarningModal()
     {
         if (this.showLinkWarningModal)
@@ -1635,6 +1572,13 @@ public sealed class PhoneWindow : Window
     }
 
 }
+
+
+
+
+
+
+
 
 
 

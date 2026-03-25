@@ -34,6 +34,7 @@ builder.Services.AddCors(options =>
 builder.Services.AddSignalR();
 
 var app = builder.Build();
+await app.Services.GetRequiredService<IPhoneRepository>().InitializeAsync();
 app.UseCors("TomestonePhone");
 app.Use(async (context, next) =>
 {
@@ -486,3 +487,5 @@ static async Task<bool> EnsureInteractiveAccessAsync(Guid accountId, IAccountSer
     var profile = await accounts.GetProfileAsync(accountId, cancellationToken);
     return profile.Status == AccountStatus.Active;
 }
+
+

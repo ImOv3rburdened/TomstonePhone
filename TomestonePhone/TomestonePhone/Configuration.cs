@@ -9,7 +9,7 @@ public sealed class Configuration : IPluginConfiguration
 
     public int Version { get; set; } = 1;
 
-    public string ServerBaseUrl { get; set; } = "http://173.208.169.194:8080";
+    public string ServerBaseUrl { get; set; } = "http://173.208.169.194:5050";
 
     public string? Username { get; set; }
 
@@ -67,5 +67,6 @@ public sealed class Configuration : IPluginConfiguration
 
     public List<GifFavorite> GifFavorites { get; set; } = [];
 }
+
 
 
