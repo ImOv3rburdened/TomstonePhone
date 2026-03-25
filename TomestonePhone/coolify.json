@@ -1,0 +1,8 @@
+{
+  "name": "tomestonephone-server",
+  "dockerfile": "TomestonePhone.Server/Dockerfile",
+  "port": 5050,
+  "healthcheck": {
+    "path": "/health"
+  }
+}
