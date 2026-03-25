@@ -47,6 +47,8 @@ public sealed class PhoneWindow : Window
     private string pendingExternalUrl = string.Empty;
     private int renderedMessageCount;
     private bool scrollMessagesToBottom = true;
+    private Task<AuthResult>? pendingAuthTask;
+    private Task<PostAuthSnapshotResult>? pendingSnapshotTask;
 
     public PhoneWindow(Service service, Configuration configuration, PhoneState state, TomestonePhoneClient client)
         : base("TomestonePhone###TomestonePhoneMain")
@@ -981,7 +983,7 @@ public sealed class PhoneWindow : Window
             return;
         }
 
-        this.pendingStatus = "Authentication failed";
+        this.pendingStatus = string.IsNullOrWhiteSpace(ex.Message) ? "Authentication failed" : ex.Message;
     }
 
     private void DrawHomeButton()
@@ -1571,7 +1573,153 @@ public sealed class PhoneWindow : Window
         }
     }
 
-}
+
+    private void BeginRegister()
+    {
+        if (this.configuration.LocalAccountLockout)
+        {
+            this.pendingStatus = "This computer is locked";
+            return;
+        }
+
+        if (!this.HasAcceptedLocalTerms())
+        {
+            this.pendingStatus = "Accept the terms first";
+            ImGui.OpenPopup("TomestonePhone Legal Terms");
+            return;
+        }
+
+        if (this.pendingAuthTask is { IsCompleted: false })
+        {
+            return;
+        }
+
+        this.pendingStatus = "Creating account...";
+        this.pendingAuthTask = this.RunRegisterAsync(this.loginUsername, this.loginPassword);
+    }
+
+    private void BeginLogin()
+    {
+        if (this.configuration.LocalAccountLockout)
+        {
+            this.pendingStatus = "This computer is locked";
+            return;
+        }
+
+        if (this.pendingAuthTask is { IsCompleted: false })
+        {
+            return;
+        }
+
+        this.pendingStatus = "Signing in...";
+        this.pendingAuthTask = this.RunLoginAsync(this.loginUsername, this.loginPassword);
+    }
+
+    private async Task<AuthResult> RunRegisterAsync(string username, string password)
+    {
+        try
+        {
+            var response = await this.client.RegisterAsync(username, password).ConfigureAwait(false);
+            return new AuthResult(response.Username, response.AuthToken, "Account created", null);
+        }
+        catch (Exception ex)
+        {
+            return new AuthResult(null, null, null, ex);
+        }
+    }
+
+    private async Task<AuthResult> RunLoginAsync(string username, string password)
+    {
+        try
+        {
+            var response = await this.client.LoginAsync(username, password).ConfigureAwait(false);
+            return new AuthResult(response.Username, response.AuthToken, $"Signed in as {response.Username}", null);
+        }
+        catch (Exception ex)
+        {
+            return new AuthResult(null, null, null, ex);
+        }
+    }
+
+    private void ProcessBackgroundTasks()
+    {
+        if (this.pendingAuthTask is { IsCompleted: true })
+        {
+            var result = this.pendingAuthTask.GetAwaiter().GetResult();
+            this.pendingAuthTask = null;
+            if (result.Error is not null)
+            {
+                this.HandleAuthFailure(result.Error);
+            }
+            else if (!string.IsNullOrWhiteSpace(result.Username) && !string.IsNullOrWhiteSpace(result.AuthToken))
+            {
+                this.configuration.Username = result.Username;
+                this.configuration.AuthToken = result.AuthToken;
+                this.pendingStatus = result.StatusMessage ?? "Signed in";
+                this.SaveConfiguration();
+                this.showHomeScreen = true;
+                this.pendingSnapshotTask = this.LoadPostAuthSnapshotAsync(result.AuthToken);
+            }
+        }
+
+        if (this.pendingSnapshotTask is { IsCompleted: true })
+        {
+            var result = this.pendingSnapshotTask.GetAwaiter().GetResult();
+            this.pendingSnapshotTask = null;
+            if (result.Error is not null)
+            {
+                this.pendingStatus = "Sync failed";
+                this.service.Log.Warning(result.Error, "Failed to refresh TomestonePhone snapshot.");
+            }
+            else if (result.Snapshot is not null)
+            {
+                this.state.ApplySnapshot(result.Snapshot);
+                if (result.UpdatedProfile is not null)
+                {
+                    this.state.CurrentProfile = result.UpdatedProfile;
+                }
+
+                if (this.state.CurrentProfile.Status == AccountStatus.Banned)
+                {
+                    this.configuration.LocalAccountLockout = true;
+                    this.configuration.LocalAccountLockoutReason = "This device is locked because the linked account was banned.";
+                    this.configuration.AuthToken = null;
+                    this.configuration.Username = null;
+                    this.SaveConfiguration();
+                    this.pendingStatus = "Device locked";
+                }
+                else
+                {
+                    this.pendingStatus = $"Synced {DateTime.Now:t}";
+                }
+            }
+        }
+    }
+
+    private async Task<PostAuthSnapshotResult> LoadPostAuthSnapshotAsync(string authToken)
+    {
+        try
+        {
+            var snapshot = await this.client.GetSnapshotAsync(authToken).ConfigureAwait(false);
+            PhoneProfile? profile = null;
+            var identity = this.GetCurrentGameIdentity();
+            if (identity is not null)
+            {
+                profile = await this.client.UpdateGameIdentityAsync(authToken, new UpdateGameIdentityRequest(identity.CharacterName, identity.WorldName)).ConfigureAwait(false);
+            }
+
+            return new PostAuthSnapshotResult(snapshot, profile, null);
+        }
+        catch (Exception ex)
+        {
+            return new PostAuthSnapshotResult(null, null, ex);
+        }
+    }
+
+    private sealed record AuthResult(string? Username, string? AuthToken, string? StatusMessage, Exception? Error);
+
+    private sealed record PostAuthSnapshotResult(PhoneSnapshot? Snapshot, PhoneProfile? UpdatedProfile, Exception? Error);}
+
 
 
 
