@@ -65,7 +65,18 @@ public sealed class Configuration : IPluginConfiguration
 
     public bool GiphySetupSeen { get; set; }
 
-    public List<GifFavorite> GifFavorites { get; set; } = [];
+    public List<GifFavorite> GifFavorites { get; set; } = [];    public void NormalizeServerBaseUrl()
+    {
+        if (string.IsNullOrWhiteSpace(this.ServerBaseUrl))
+        {
+            this.ServerBaseUrl = "http://173.208.169.194:5050";
+            return;
+        }
+
+        this.ServerBaseUrl = this.ServerBaseUrl
+            .Replace(":8080", ":5050", StringComparison.OrdinalIgnoreCase)
+            .Replace("/8080", "/5050", StringComparison.OrdinalIgnoreCase);
+    }
 }
 
 
