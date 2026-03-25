@@ -24,6 +24,7 @@ public sealed class MariaDbPhoneRepository : IPhoneRepository
             UserID = options.Username,
             Password = options.Password,
             SslMode = Enum.TryParse<MySqlSslMode>(options.SslMode, true, out var sslMode) ? sslMode : MySqlSslMode.None,
+            AllowPublicKeyRetrieval = options.AllowPublicKeyRetrieval,
             AllowUserVariables = true,
         };
 
@@ -155,5 +156,3 @@ public sealed class MariaDbPhoneRepository : IPhoneRepository
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 }
-
-

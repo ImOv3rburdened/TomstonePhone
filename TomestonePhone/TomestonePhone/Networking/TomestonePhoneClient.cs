@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using Dalamud.Plugin.Services;
@@ -21,7 +22,17 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         var response = await this.httpClient.PostAsJsonAsync("/api/auth/login", new LoginRequest(username, password), cancellationToken);
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            var payload = await response.Content.ReadFromJsonAsync<ErrorPayload>(cancellationToken: cancellationToken);
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                throw new InvalidOperationException(payload?.Error ?? "Invalid username or password.");
+            }
+
+            throw new InvalidOperationException(payload?.Error ?? $"Login failed ({(int)response.StatusCode}).");
+        }
+
         return await response.Content.ReadFromJsonAsync<LoginResponse>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Login returned no payload.");
     }
 
@@ -39,7 +50,12 @@ public sealed class TomestonePhoneClient : IDisposable
             DateTimeOffset.UtcNow);
 
         var response = await this.httpClient.PostAsJsonAsync("/api/auth/register", request, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            var payload = await response.Content.ReadFromJsonAsync<ErrorPayload>(cancellationToken: cancellationToken);
+            throw new InvalidOperationException(payload?.Error ?? $"Registration failed ({(int)response.StatusCode}).");
+        }
+
         return await response.Content.ReadFromJsonAsync<RegisterResponse>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Registration returned no payload.");
     }
 

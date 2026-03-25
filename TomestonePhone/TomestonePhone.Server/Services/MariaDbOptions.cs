@@ -13,4 +13,6 @@ public sealed class MariaDbOptions
     public string Password { get; set; } = "8buS~kuw6rHd";
 
     public string SslMode { get; set; } = "None";
+
+    public bool AllowPublicKeyRetrieval { get; set; } = true;
 }
