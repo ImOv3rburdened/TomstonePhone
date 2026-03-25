@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TomestonePhone Portal</title>
+  <link rel="stylesheet" href="/site.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="auth">
+      <h1>TomestonePhone Portal</h1>
+      <p>Sign in, create an account, and review the service policies at any time.</p>
+      <div class="auth-grid">
+        <input id="username" type="text" placeholder="Username" aria-label="Username">
+        <input id="password" type="password" placeholder="Password" aria-label="Password">
+        <button id="loginButton" type="button">Login</button>
+        <button id="registerButton" type="button" class="secondary">Register</button>
+      </div>
+      <div class="check-stack">
+        <label class="terms-check">
+          <input id="termsAccepted" type="checkbox">
+          <span>I agree to the Terms of Service.</span>
+        </label>
+        <label class="terms-check">
+          <input id="privacyAccepted" type="checkbox">
+          <span>I agree to the Privacy Policy.</span>
+        </label>
+      </div>
+      <div class="policy-grid">
+        <details class="terms-box" open>
+          <summary>Terms of Service</summary>
+          <div id="termsText"></div>
+        </details>
+        <details class="terms-box" open>
+          <summary>Privacy Policy</summary>
+          <div id="privacyText"></div>
+        </details>
+      </div>
+      <p id="authStatus" class="status">Not signed in.</p>
+    </section>
+
+    <section class="studio one-column">
+      <div class="controls-column">
+        <section class="panel">
+          <h2>Profile</h2>
+          <p class="hint">User-hosted chat images are disabled. Messages can still include external links, and policy records remain accessible here.</p>
+          <pre id="profileSummary">Sign in to view the current account summary.</pre>
+        </section>
+      </div>
+    </section>
+  </main>
+  <script src="/site.js"></script>
+</body>
+</html>

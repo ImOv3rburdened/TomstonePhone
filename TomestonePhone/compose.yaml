@@ -1,0 +1,11 @@
+services:
+  tomestonephone-server:
+    build:
+      context: .
+      dockerfile: TomestonePhone.Server/Dockerfile
+    ports:
+      - "5050:5050"
+    environment:
+      ASPNETCORE_URLS: http://0.0.0.0:5050
+    volumes:
+      - ./TomestonePhone.Server/AppData:/app/AppData
