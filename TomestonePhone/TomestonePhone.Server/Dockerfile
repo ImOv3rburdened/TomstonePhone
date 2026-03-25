@@ -7,6 +7,7 @@ RUN dotnet publish ./TomestonePhone.Server/TomestonePhone.Server.csproj -c Relea
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-preview
 WORKDIR /app
 COPY --from=build /app/publish .
-ENV ASPNETCORE_URLS=http://0.0.0.0:8080
-EXPOSE 8080
+ENV ASPNETCORE_URLS=http://0.0.0.0:5050
+EXPOSE 5050
 ENTRYPOINT ["dotnet", "TomestonePhone.Server.dll"]
+
