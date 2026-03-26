@@ -40,6 +40,8 @@ public sealed class PhoneWindow : Window
     private string composeMessage = string.Empty;
     private string composeEmbedUrl = string.Empty;
     private string directMessageTarget = string.Empty;
+    private string contactAddTarget = string.Empty;
+    private string callTarget = string.Empty;
     private string friendRequestTarget = string.Empty;
     private string friendRequestMessage = string.Empty;
     private string reportReplyBody = string.Empty;
@@ -396,6 +398,32 @@ public sealed class PhoneWindow : Window
                     }
 
                     ImGui.SameLine();
+                    if (ImGui.Button("Call", new Vector2(72f, 28f)))
+                    {
+                        try
+                        {
+                            var call = this.client.StartCallAsync(this.configuration.AuthToken, new StartCallRequest(selectedId, false)).GetAwaiter().GetResult();
+                            this.state.ActiveCall = new ActiveCallState
+                            {
+                                CallId = call.Id,
+                                Title = call.DisplayName,
+                                Participants = [call.DisplayName],
+                                IsIncoming = false,
+                                IsMuted = false,
+                                StartedUtc = DateTimeOffset.UtcNow,
+                            };
+                            this.activeTab = PhoneTab.Calls;
+                            this.showHomeScreen = false;
+                            this.pendingStatus = $"Calling {call.DisplayName}";
+                        }
+                        catch (Exception ex)
+                        {
+                            this.pendingStatus = ex.Message;
+                        }
+                    }
+
+                    ImGui.SameLine();
+
 
                     if (ImGui.Button("Block", new Vector2(90f, 28f)))
                     {
@@ -512,6 +540,37 @@ public sealed class PhoneWindow : Window
 
     private void DrawCalls()
     {
+        ImGui.TextDisabled("Start Call");
+        var callButtonWidth = 104f;
+        var callInputWidth = Math.Max(140f, ImGui.GetContentRegionAvail().X - callButtonWidth - 10f);
+        ImGui.SetNextItemWidth(callInputWidth);
+        ImGui.InputTextWithHint("##call-target", "Username or phone number", ref this.callTarget, 64);
+        ImGui.SameLine();
+        if (ImGui.Button("Call", new Vector2(callButtonWidth, 28f)) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken) && !string.IsNullOrWhiteSpace(this.callTarget))
+        {
+            try
+            {
+                var conversation = this.client.StartDirectConversationAsync(this.configuration.AuthToken, new StartDirectConversationRequest(this.callTarget)).GetAwaiter().GetResult();
+                var call = this.client.StartCallAsync(this.configuration.AuthToken, new StartCallRequest(conversation.Id, false)).GetAwaiter().GetResult();
+                this.state.ActiveCall = new ActiveCallState
+                {
+                    CallId = call.Id,
+                    Title = call.DisplayName,
+                    Participants = [call.DisplayName],
+                    IsIncoming = false,
+                    IsMuted = false,
+                    StartedUtc = DateTimeOffset.UtcNow,
+                };
+                this.callTarget = string.Empty;
+                this.pendingStatus = $"Calling {call.DisplayName}";
+            }
+            catch (Exception ex)
+            {
+                this.pendingStatus = ex.Message;
+            }
+        }
+
+        ImGui.Separator();
         ImGui.TextDisabled("Recent Calls");
         ImGui.Separator();
 
@@ -537,6 +596,39 @@ public sealed class PhoneWindow : Window
 
     private void DrawContacts()
     {
+        ImGui.TextDisabled("Add Contact");
+        var contactButtonWidth = 104f;
+        var contactInputWidth = Math.Max(140f, ImGui.GetContentRegionAvail().X - contactButtonWidth - 10f);
+        ImGui.SetNextItemWidth(contactInputWidth);
+        ImGui.InputTextWithHint("##contact-target", "Username or phone number", ref this.contactAddTarget, 64);
+        ImGui.SameLine();
+        if (ImGui.Button("Add", new Vector2(contactButtonWidth, 28f)) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken) && !string.IsNullOrWhiteSpace(this.contactAddTarget))
+        {
+            try
+            {
+                var conversation = this.client.StartDirectConversationAsync(this.configuration.AuthToken, new StartDirectConversationRequest(this.contactAddTarget)).GetAwaiter().GetResult();
+                var detail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
+                var otherMember = detail.Members.FirstOrDefault(item => item.AccountId != this.state.CurrentProfile.AccountId);
+                if (otherMember is null)
+                {
+                    this.pendingStatus = "Contact could not be resolved";
+                }
+                else
+                {
+                    var contact = this.client.AddContactAsync(this.configuration.AuthToken, otherMember.AccountId, otherMember.DisplayName, string.Empty).GetAwaiter().GetResult();
+                    this.state.Contacts.RemoveAll(item => item.Id == contact.Id);
+                    this.state.Contacts.Add(contact);
+                    this.contactAddTarget = string.Empty;
+                    this.pendingStatus = "Contact saved";
+                }
+            }
+            catch (Exception ex)
+            {
+                this.pendingStatus = ex.Message;
+            }
+        }
+
+        ImGui.Separator();
         ImGui.TextDisabled("Contacts");
         ImGui.Separator();
 
@@ -548,7 +640,7 @@ public sealed class PhoneWindow : Window
 
         foreach (var contact in this.state.Contacts.OrderBy(item => item.DisplayName))
         {
-            using var item = ImRaii.Child($"contact-{contact.Id}", new Vector2(-1f, 72f), true);
+            using var item = ImRaii.Child($"contact-{contact.Id}", new Vector2(-1f, 88f), true);
             if (!item.Success)
             {
                 continue;
@@ -558,6 +650,44 @@ public sealed class PhoneWindow : Window
             if (!string.IsNullOrWhiteSpace(contact.Note))
             {
                 ImGui.TextDisabled(contact.Note);
+            }
+
+            if (ImGui.Button($"Message##{contact.Id}", new Vector2(90f, 26f)) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+            {
+                var conversation = this.client.StartDirectConversationAsync(this.configuration.AuthToken, new StartDirectConversationRequest(contact.PhoneNumber)).GetAwaiter().GetResult();
+                this.selectedConversationId = conversation.Id;
+                this.selectedConversationMessages = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
+                this.selectedConversationDetail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
+                this.showHomeScreen = false;
+                this.activeTab = PhoneTab.Messages;
+                this.scrollMessagesToBottom = true;
+            }
+
+            ImGui.SameLine();
+
+            if (ImGui.Button($"Call##{contact.Id}", new Vector2(90f, 26f)) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+            {
+                try
+                {
+                    var conversation = this.client.StartDirectConversationAsync(this.configuration.AuthToken, new StartDirectConversationRequest(contact.PhoneNumber)).GetAwaiter().GetResult();
+                    var call = this.client.StartCallAsync(this.configuration.AuthToken, new StartCallRequest(conversation.Id, false)).GetAwaiter().GetResult();
+                    this.state.ActiveCall = new ActiveCallState
+                    {
+                        CallId = call.Id,
+                        Title = call.DisplayName,
+                        Participants = [call.DisplayName],
+                        IsIncoming = false,
+                        IsMuted = false,
+                        StartedUtc = DateTimeOffset.UtcNow,
+                    };
+                    this.showHomeScreen = false;
+                    this.activeTab = PhoneTab.Calls;
+                    this.pendingStatus = $"Calling {call.DisplayName}";
+                }
+                catch (Exception ex)
+                {
+                    this.pendingStatus = ex.Message;
+                }
             }
         }
     }

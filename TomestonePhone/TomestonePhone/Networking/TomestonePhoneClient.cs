@@ -24,7 +24,7 @@ public sealed class TomestonePhoneClient : IDisposable
         var response = await this.httpClient.PostAsJsonAsync("/api/auth/login", new LoginRequest(username, password), cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            var payload = await response.Content.ReadFromJsonAsync<ErrorPayload>(cancellationToken: cancellationToken);
+            var payload = await this.TryReadErrorPayloadAsync(response, cancellationToken);
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 throw new InvalidOperationException(payload?.Error ?? "Invalid username or password.");
@@ -52,7 +52,7 @@ public sealed class TomestonePhoneClient : IDisposable
         var response = await this.httpClient.PostAsJsonAsync("/api/auth/register", request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            var payload = await response.Content.ReadFromJsonAsync<ErrorPayload>(cancellationToken: cancellationToken);
+            var payload = await this.TryReadErrorPayloadAsync(response, cancellationToken);
             throw new InvalidOperationException(payload?.Error ?? $"Registration failed ({(int)response.StatusCode}).");
         }
 
@@ -104,6 +104,14 @@ public sealed class TomestonePhoneClient : IDisposable
         return await response.Content.ReadFromJsonAsync<ConversationSummary>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Direct conversation returned no payload.");
     }
 
+    public async Task<CallSummary> StartCallAsync(string token, StartCallRequest request, CancellationToken cancellationToken = default)
+    {
+        this.ApplyBaseAddress();
+        this.SetAuth(token);
+        var response = await this.httpClient.PostAsJsonAsync("/api/calls/start", request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<CallSummary>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Call start returned no payload.");
+    }
     public async Task<bool> BlockAccountAsync(string token, Guid targetAccountId, CancellationToken cancellationToken = default)
     {
         this.ApplyBaseAddress();
@@ -140,7 +148,7 @@ public sealed class TomestonePhoneClient : IDisposable
         var response = await this.httpClient.PostAsJsonAsync("/api/messages", request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            var payload = await response.Content.ReadFromJsonAsync<ErrorPayload>(cancellationToken: cancellationToken);
+            var payload = await this.TryReadErrorPayloadAsync(response, cancellationToken);
             throw new InvalidOperationException(payload?.Error ?? "Message delivery failed.");
         }
 
@@ -275,6 +283,18 @@ public sealed class TomestonePhoneClient : IDisposable
         this.httpClient.Dispose();
     }
 
+    private async Task<ErrorPayload?> TryReadErrorPayloadAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await response.Content.ReadFromJsonAsync<ErrorPayload>(cancellationToken: cancellationToken);
+        }
+        catch
+        {
+            var text = await response.Content.ReadAsStringAsync(cancellationToken);
+            return string.IsNullOrWhiteSpace(text) ? null : new ErrorPayload { Error = text.Trim() };
+        }
+    }
     private void ApplyBaseAddress()
     {
         var target = this.configuration.ServerBaseUrl.TrimEnd('/');
