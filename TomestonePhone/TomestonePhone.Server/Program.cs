@@ -70,7 +70,9 @@ app.MapPost("/api/auth/register", async (HttpContext context, RegisterRequest re
 app.MapPost("/api/auth/login", async (HttpContext context, LoginRequest request, IAccountService accounts, CancellationToken cancellationToken) =>
 {
     var response = await accounts.LoginAsync(request.Username, request.Password, RequestIpResolver.Resolve(context), cancellationToken);
-    return response is null ? Results.Unauthorized() : Results.Ok(response);
+    return response is null
+        ? Results.Json(new { error = "Invalid username or password." }, statusCode: StatusCodes.Status401Unauthorized)
+        : Results.Ok(response);
 });
 
 app.MapGet("/api/phone/me", async (HttpContext context, IAccountService accounts, IPhoneDirectoryService directory, IChatService chat, ICallService calls, IFriendService friends, IReportService reports, ISupportTicketService tickets, IPhoneRepository repository, CancellationToken cancellationToken) =>
