@@ -54,6 +54,7 @@ public sealed class PhoneWindow : Window
     private Task<AuthResult>? pendingAuthTask;
     private Task<PostAuthSnapshotResult>? pendingSnapshotTask;
     private bool refreshOnNextDraw = true;
+    private bool autoLoginAttempted;
 
     public PhoneWindow(Service service, Configuration configuration, PhoneState state, TomestonePhoneClient client)
         : base("TomestonePhone###TomestonePhoneMain")
@@ -83,6 +84,7 @@ public sealed class PhoneWindow : Window
     public override void OnOpen()
     {
         this.refreshOnNextDraw = true;
+        this.autoLoginAttempted = false;
     }
 
     public void DisposeResources()
@@ -111,6 +113,7 @@ public sealed class PhoneWindow : Window
     public override void Draw()
     {
         this.ProcessBackgroundTasks();
+        this.TryBeginAutoLogin();
         this.EnsureSessionHydrated();
         this.EnforceAspectRatio();
 
@@ -135,7 +138,7 @@ public sealed class PhoneWindow : Window
         this.DrawHeader();
         ImGui.Separator();
 
-        using var content = ImRaii.Child("TomestonePhoneContent", new Vector2(-1f, -52f), true);
+        using var content = ImRaii.Child("TomestonePhoneContent", new Vector2(-1f, -this.Scale(52f)), true);
         if (!content.Success)
         {
             return;
@@ -143,7 +146,18 @@ public sealed class PhoneWindow : Window
 
         if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
         {
-            this.DrawAuthStartScreen();
+            if (this.pendingAuthTask is { IsCompleted: false })
+            {
+                this.DrawSessionRestoreScreen();
+            }
+            else
+            {
+                this.DrawAuthStartScreen();
+            }
+        }
+        else if (!this.HasHydratedAuthenticatedProfile())
+        {
+            this.DrawSessionRestoreScreen();
         }
         else if (this.showHomeScreen)
         {
@@ -183,7 +197,11 @@ public sealed class PhoneWindow : Window
             }
         }
 
-        this.DrawHomeButton();
+        using var homeBar = ImRaii.Child("TomestonePhoneHomeBar", new Vector2(-1f, this.Scale(44f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+        if (homeBar.Success)
+        {
+            this.DrawHomeButton();
+        }
     }
 
     private void DrawHeader()
@@ -214,9 +232,8 @@ public sealed class PhoneWindow : Window
             ImGui.SameLine(topWidth - refreshWidth - this.Scale(14f));
             if (ImGui.Button("Refresh", new Vector2(refreshWidth, this.Scale(24f))))
             {
-                this.refreshOnNextDraw = false;
-                this.pendingStatus = "Refreshing account...";
-        this.pendingSnapshotTask = this.LoadPostAuthSnapshotAsync(this.configuration.AuthToken);
+                this.refreshOnNextDraw = true;
+                this.RefreshSnapshot();
             }
         }
 
@@ -801,6 +818,39 @@ public sealed class PhoneWindow : Window
         }
     }
 
+    private void DrawSessionRestoreScreen()
+    {
+        using var panel = ImRaii.Child("session-restore", new Vector2(-1f, -1f), false);
+        if (!panel.Success)
+        {
+            return;
+        }
+
+        using var card = ImRaii.Child("session-restore-card", new Vector2(-1f, this.Scale(220f)), false);
+        if (!card.Success)
+        {
+            return;
+        }
+
+        ImGui.Dummy(new Vector2(0f, this.Scale(12f)));
+        ImGui.TextDisabled("Restoring Account");
+        var username = string.IsNullOrWhiteSpace(this.configuration.Username) ? "your account" : this.configuration.Username;
+        ImGui.TextWrapped($"Signing back into {username} and loading your phone data.");
+        ImGui.Spacing();
+        ImGui.TextDisabled(this.pendingStatus);
+        ImGui.Spacing();
+        if (ImGui.Button("Retry Now", this.Scale(128f, 34f)))
+        {
+            this.refreshOnNextDraw = true;
+            this.RefreshSnapshot();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Log Out", this.Scale(128f, 34f)))
+        {
+            this.SignOutToGuestState("Signed out");
+        }
+    }
+
     private void DrawSettings()
     {
         var isAuthenticated = !string.IsNullOrWhiteSpace(this.configuration.AuthToken);
@@ -1072,12 +1122,19 @@ public sealed class PhoneWindow : Window
     private void HandleAuthFailure(Exception ex)
     {
         var message = ex.ToString();
+        if (message.Contains("Invalid username or password", StringComparison.OrdinalIgnoreCase) && this.autoLoginAttempted)
+        {
+            this.configuration.ClearRememberedCredentials();
+            this.SaveConfiguration();
+        }
+
         if (message.Contains("403") || message.Contains("banned", StringComparison.OrdinalIgnoreCase) || message.Contains("forbidden", StringComparison.OrdinalIgnoreCase))
         {
             this.configuration.LocalAccountLockout = true;
             this.configuration.LocalAccountLockoutReason = "This device is locked due to a banned account or IP restriction.";
             this.configuration.AuthToken = null;
             this.configuration.Username = null;
+            this.configuration.ClearRememberedCredentials();
             this.SaveConfiguration();
             this.pendingStatus = "Device locked";
             return;
@@ -1088,13 +1145,12 @@ public sealed class PhoneWindow : Window
 
     private void DrawHomeButton()
     {
-        var windowPos = ImGui.GetWindowPos();
-        var size = ImGui.GetWindowSize();
-        var visualSize = new Vector2(this.Scale(132f), this.Scale(9f));
+        var available = ImGui.GetContentRegionAvail();
         var hitSize = new Vector2(this.Scale(176f), this.Scale(28f));
-        var hitPos = new Vector2(windowPos.X + (size.X - hitSize.X) * 0.5f, windowPos.Y + size.Y - this.Scale(34f));
-        var visualPos = new Vector2(windowPos.X + (size.X - visualSize.X) * 0.5f, windowPos.Y + size.Y - this.Scale(24f));
-        ImGui.SetCursorScreenPos(hitPos);
+        var visualSize = new Vector2(this.Scale(132f), this.Scale(9f));
+        var cursor = new Vector2(Math.Max(0f, (available.X - hitSize.X) * 0.5f), Math.Max(0f, (available.Y - hitSize.Y) * 0.5f));
+        ImGui.SetCursorPos(cursor);
+        var hitPos = ImGui.GetCursorScreenPos();
         if (ImGui.InvisibleButton("Home", hitSize))
         {
             this.showHomeScreen = true;
@@ -1102,8 +1158,12 @@ public sealed class PhoneWindow : Window
             this.selectedConversationMessages = null;
             this.selectedConversationDetail = null;
             this.activeTab = PhoneTab.Messages;
-            this.pendingStatus = string.IsNullOrWhiteSpace(this.configuration.AuthToken) ? this.pendingStatus : $"Synced {DateTime.Now:t}";
+            if (!string.IsNullOrWhiteSpace(this.configuration.AuthToken) && this.pendingSnapshotTask is not { IsCompleted: false })
+            {
+                this.pendingStatus = $"Synced {DateTime.Now:t}";
+            }
         }
+        var visualPos = new Vector2(hitPos.X + (hitSize.X - visualSize.X) * 0.5f, hitPos.Y + (hitSize.Y - visualSize.Y) * 0.5f);
         var draw = ImGui.GetWindowDrawList();
         draw.AddRectFilled(visualPos + new Vector2(0f, this.Scale(2f)), visualPos + visualSize + new Vector2(0f, this.Scale(2f)), ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.2f)), 999f);
         draw.AddRectFilled(visualPos, visualPos + visualSize, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.78f)), 999f);
@@ -1837,7 +1897,7 @@ public sealed class PhoneWindow : Window
             return;
         }
 
-        this.pendingSnapshotTask = this.LoadPostAuthSnapshotAsync(this.configuration.AuthToken);
+        this.QueueSnapshotRefresh();
     }
 
     private void ProcessBackgroundTasks()
@@ -1854,11 +1914,13 @@ public sealed class PhoneWindow : Window
             {
                 this.configuration.Username = result.Username;
                 this.configuration.AuthToken = result.AuthToken;
+                this.configuration.StoreRememberedCredentials(this.loginUsername, this.loginPassword);
                 this.pendingStatus = result.StatusMessage ?? "Signed in";
                 this.SaveConfiguration();
                 this.showHomeScreen = true;
-                this.refreshOnNextDraw = false;
-        this.pendingSnapshotTask = this.LoadPostAuthSnapshotAsync(this.configuration.AuthToken);
+                this.autoLoginAttempted = false;
+                this.refreshOnNextDraw = true;
+                this.QueueSnapshotRefresh();
             }
         }
 
@@ -1868,6 +1930,16 @@ public sealed class PhoneWindow : Window
             this.pendingSnapshotTask = null;
             if (result.Error is not null)
             {
+                if (this.IsUnauthorizedError(result.Error))
+                {
+                    this.configuration.AuthToken = null;
+                    this.SaveConfiguration();
+                    if (this.TryBeginAutoLogin("Session expired. Restoring..."))
+                    {
+                        return;
+                    }
+                }
+
                 this.refreshOnNextDraw = false;
                 this.pendingStatus = "Sync failed";
                 this.service.Log.Warning(result.Error, "Failed to refresh TomestonePhone snapshot.");
@@ -1886,6 +1958,7 @@ public sealed class PhoneWindow : Window
                     this.configuration.LocalAccountLockoutReason = "This device is locked because the linked account was banned.";
                     this.configuration.AuthToken = null;
                     this.configuration.Username = null;
+                    this.configuration.ClearRememberedCredentials();
                     this.SaveConfiguration();
                     this.pendingStatus = "Device locked";
                 }
@@ -1896,6 +1969,78 @@ public sealed class PhoneWindow : Window
                 }
             }
         }
+    }
+
+    private bool HasHydratedAuthenticatedProfile()
+    {
+        return !string.IsNullOrWhiteSpace(this.configuration.AuthToken)
+            && this.state.CurrentProfile.AccountId != Guid.Empty
+            && !string.IsNullOrWhiteSpace(this.state.CurrentProfile.PhoneNumber)
+            && !string.Equals(this.state.CurrentProfile.Username, "Guest", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool TryBeginAutoLogin(string statusMessage = "Restoring session...")
+    {
+        if (!string.IsNullOrWhiteSpace(this.configuration.AuthToken) || this.configuration.LocalAccountLockout || this.autoLoginAttempted)
+        {
+            return false;
+        }
+
+        if (this.pendingAuthTask is { IsCompleted: false })
+        {
+            return true;
+        }
+
+        if (!this.configuration.TryGetRememberedCredentials(out var rememberedUsername, out var rememberedPassword))
+        {
+            return false;
+        }
+
+        this.loginUsername = rememberedUsername;
+        this.loginPassword = rememberedPassword;
+        this.pendingStatus = statusMessage;
+        this.autoLoginAttempted = true;
+        this.pendingAuthTask = this.RunLoginAsync(rememberedUsername, rememberedPassword);
+        return true;
+    }
+
+    private bool IsUnauthorizedError(Exception ex)
+    {
+        var message = ex.ToString();
+        return message.Contains("401")
+            || message.Contains("unauthorized", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("forbidden", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void SignOutToGuestState(string statusMessage)
+    {
+        var seeded = PhoneState.CreateSeeded();
+        this.configuration.AuthToken = null;
+        this.configuration.Username = null;
+        this.configuration.ClearRememberedCredentials();
+        this.state.CurrentProfile = seeded.CurrentProfile;
+        this.state.Contacts = seeded.Contacts;
+        this.state.BlockedContacts = seeded.BlockedContacts;
+        this.state.Friends = seeded.Friends;
+        this.state.Conversations = seeded.Conversations;
+        this.state.RecentCalls = seeded.RecentCalls;
+        this.state.FriendRequests = seeded.FriendRequests;
+        this.state.Notifications = seeded.Notifications;
+        this.state.VisibleReports = seeded.VisibleReports;
+        this.state.VisibleAuditLogs = seeded.VisibleAuditLogs;
+        this.state.SupportTickets = seeded.SupportTickets;
+        this.state.ActiveCall = null;
+        this.selectedConversationId = null;
+        this.selectedConversationMessages = null;
+        this.selectedConversationDetail = null;
+        this.showHomeScreen = false;
+        this.activeTab = PhoneTab.Settings;
+        this.pendingAuthTask = null;
+        this.pendingSnapshotTask = null;
+        this.refreshOnNextDraw = false;
+        this.pendingStatus = statusMessage;
+        this.autoLoginAttempted = false;
+        this.SaveConfiguration();
     }
 
     private async Task<PostAuthSnapshotResult> LoadPostAuthSnapshotAsync(string authToken)
@@ -1921,6 +2066,11 @@ public sealed class PhoneWindow : Window
     private sealed record AuthResult(string? Username, string? AuthToken, string? StatusMessage, Exception? Error);
 
     private sealed record PostAuthSnapshotResult(PhoneSnapshot? Snapshot, PhoneProfile? UpdatedProfile, Exception? Error);}
+
+
+
+
+
 
 
 
