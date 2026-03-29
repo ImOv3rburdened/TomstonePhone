@@ -128,7 +128,7 @@ public sealed class PhoneWindow : Window
         this.DrawPrivacyModal();
         this.DrawExternalLinkWarningModal();
 
-        using var root = ImRaii.Child("TomestonePhoneRoot", new Vector2(-1f, -1f), true);
+        using var root = ImRaii.Child("TomestonePhoneRoot", new Vector2(-1f, -1f), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
         if (!root.Success)
         {
             return;
@@ -138,7 +138,9 @@ public sealed class PhoneWindow : Window
         this.DrawHeader();
         ImGui.Separator();
 
-        using var content = ImRaii.Child("TomestonePhoneContent", new Vector2(-1f, -this.Scale(52f)), true);
+        var footerHeight = this.Scale(52f);
+        var contentHeight = Math.Max(this.Scale(120f), ImGui.GetContentRegionAvail().Y - footerHeight);
+        using var content = ImRaii.Child("TomestonePhoneContent", new Vector2(-1f, contentHeight), true);
         if (!content.Success)
         {
             return;
@@ -197,7 +199,7 @@ public sealed class PhoneWindow : Window
             }
         }
 
-        using var homeBar = ImRaii.Child("TomestonePhoneHomeBar", new Vector2(-1f, this.Scale(44f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+        using var homeBar = ImRaii.Child("TomestonePhoneHomeBar", new Vector2(-1f, footerHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
         if (homeBar.Success)
         {
             this.DrawHomeButton();
@@ -2057,7 +2059,14 @@ public sealed class PhoneWindow : Window
             var identity = this.GetCurrentGameIdentity();
             if (identity is not null)
             {
-                profile = await this.client.UpdateGameIdentityAsync(authToken, new UpdateGameIdentityRequest(identity.CharacterName, identity.WorldName)).ConfigureAwait(false);
+                try
+                {
+                    profile = await this.client.UpdateGameIdentityAsync(authToken, new UpdateGameIdentityRequest(identity.CharacterName, identity.WorldName)).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    this.service.Log.Warning(ex, "TomestonePhone restored account data but failed to update the current game identity.");
+                }
             }
 
             return new PostAuthSnapshotResult(snapshot, profile, null);
@@ -2071,6 +2080,11 @@ public sealed class PhoneWindow : Window
     private sealed record AuthResult(string? Username, string? AuthToken, string? StatusMessage, Exception? Error);
 
     private sealed record PostAuthSnapshotResult(PhoneSnapshot? Snapshot, PhoneProfile? UpdatedProfile, Exception? Error);}
+
+
+
+
+
 
 
 
