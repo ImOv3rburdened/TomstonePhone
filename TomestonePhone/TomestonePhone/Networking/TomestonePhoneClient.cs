@@ -16,6 +16,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.configuration = configuration;
         this.log = log;
+        this.httpClient.Timeout = TimeSpan.FromSeconds(15);
     }
 
     public async Task<LoginResponse> LoginAsync(string username, string password, CancellationToken cancellationToken = default)
@@ -319,3 +320,4 @@ public sealed class TomestonePhoneClient : IDisposable
         public string? Error { get; set; }
     }
 }
+

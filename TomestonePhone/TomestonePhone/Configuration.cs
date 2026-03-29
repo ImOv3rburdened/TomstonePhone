@@ -1,4 +1,6 @@
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using Dalamud.Configuration;
 
 namespace TomestonePhone;
@@ -14,6 +16,10 @@ public sealed class Configuration : IPluginConfiguration
     public string? Username { get; set; }
 
     public string? AuthToken { get; set; }
+
+    public string? RememberedUsername { get; set; }
+
+    public string? RememberedPasswordProtected { get; set; }
 
     public string BackgroundImagePath { get; set; } = Path.Combine(AssetRoot, "phone-wallpaper-default.svg");
 
@@ -65,7 +71,9 @@ public sealed class Configuration : IPluginConfiguration
 
     public bool GiphySetupSeen { get; set; }
 
-    public List<GifFavorite> GifFavorites { get; set; } = [];    public void NormalizeServerBaseUrl()
+    public List<GifFavorite> GifFavorites { get; set; } = [];
+
+    public void NormalizeServerBaseUrl()
     {
         if (string.IsNullOrWhiteSpace(this.ServerBaseUrl))
         {
@@ -77,7 +85,49 @@ public sealed class Configuration : IPluginConfiguration
             .Replace(":8080", ":5050", StringComparison.OrdinalIgnoreCase)
             .Replace("/8080", "/5050", StringComparison.OrdinalIgnoreCase);
     }
+
+    public void StoreRememberedCredentials(string username, string password)
+    {
+        this.RememberedUsername = string.IsNullOrWhiteSpace(username) ? null : username.Trim();
+        this.RememberedPasswordProtected = string.IsNullOrWhiteSpace(password) ? null : ProtectString(password);
+    }
+
+    public bool TryGetRememberedCredentials(out string username, out string password)
+    {
+        username = this.RememberedUsername ?? string.Empty;
+        password = UnprotectString(this.RememberedPasswordProtected) ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(username) && !string.IsNullOrWhiteSpace(password);
+    }
+
+    public void ClearRememberedCredentials()
+    {
+        this.RememberedUsername = null;
+        this.RememberedPasswordProtected = null;
+    }
+
+    private static string? ProtectString(string value)
+    {
+        var bytes = Encoding.UTF8.GetBytes(value);
+        var protectedBytes = ProtectedData.Protect(bytes, null, DataProtectionScope.CurrentUser);
+        return Convert.ToBase64String(protectedBytes);
+    }
+
+    private static string? UnprotectString(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        try
+        {
+            var protectedBytes = Convert.FromBase64String(value);
+            var bytes = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.CurrentUser);
+            return Encoding.UTF8.GetString(bytes);
+        }
+        catch
+        {
+            return null;
+        }
+    }
 }
-
-
-
