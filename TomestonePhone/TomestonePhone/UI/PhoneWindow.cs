@@ -1150,8 +1150,12 @@ public sealed class PhoneWindow : Window
         var visualSize = new Vector2(this.Scale(132f), this.Scale(9f));
         var cursor = new Vector2(Math.Max(0f, (available.X - hitSize.X) * 0.5f), Math.Max(0f, (available.Y - hitSize.Y) * 0.5f));
         ImGui.SetCursorPos(cursor);
+        using var buttonStyle = ImRaii.PushStyle(ImGuiStyleVar.FrameRounding, hitSize.Y * 0.5f);
+        using var buttonColor = ImRaii.PushColor(ImGuiCol.Button, new Vector4(1f, 1f, 1f, 0.01f));
+        using var buttonHovered = ImRaii.PushColor(ImGuiCol.ButtonHovered, new Vector4(1f, 1f, 1f, 0.06f));
+        using var buttonActive = ImRaii.PushColor(ImGuiCol.ButtonActive, new Vector4(1f, 1f, 1f, 0.1f));
         var hitPos = ImGui.GetCursorScreenPos();
-        if (ImGui.InvisibleButton("Home", hitSize))
+        if (ImGui.Button("##Home", hitSize))
         {
             this.showHomeScreen = true;
             this.selectedConversationId = null;
@@ -1163,6 +1167,7 @@ public sealed class PhoneWindow : Window
                 this.pendingStatus = $"Synced {DateTime.Now:t}";
             }
         }
+
         var visualPos = new Vector2(hitPos.X + (hitSize.X - visualSize.X) * 0.5f, hitPos.Y + (hitSize.Y - visualSize.Y) * 0.5f);
         var draw = ImGui.GetWindowDrawList();
         draw.AddRectFilled(visualPos + new Vector2(0f, this.Scale(2f)), visualPos + visualSize + new Vector2(0f, this.Scale(2f)), ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.2f)), 999f);
