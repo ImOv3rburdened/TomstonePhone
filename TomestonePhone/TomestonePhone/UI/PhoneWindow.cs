@@ -36,6 +36,8 @@ public sealed class PhoneWindow : Window
     private string ownerResetTarget = string.Empty;
     private string ownerResetPassword = string.Empty;
     private AdminDashboardSnapshot? adminDashboard;
+    private string staffSearchQuery = string.Empty;
+    private string staffTicketParticipantTarget = string.Empty;
     private Guid? selectedConversationId;
     private ConversationMessagePage? selectedConversationMessages;
     private ConversationDetail? selectedConversationDetail;
@@ -66,6 +68,11 @@ public sealed class PhoneWindow : Window
     private bool autoLoginAttempted;
     private string? lastChatDebugMessage;
 
+    private Task<ClientVersionPolicyResult>? pendingVersionPolicyTask;
+    private bool clientVersionChecked;
+    private bool clientUpdateRequired;
+    private string minimumClientVersion = string.Empty;
+    private string clientUpdateMessage = string.Empty;
     public PhoneWindow(Service service, Configuration configuration, PhoneState state, TomestonePhoneClient client)
         : base("TomestonePhone###TomestonePhoneMain")
     {
@@ -95,6 +102,11 @@ public sealed class PhoneWindow : Window
     {
         this.refreshOnNextDraw = true;
         this.autoLoginAttempted = false;
+        this.clientVersionChecked = false;
+        this.clientUpdateRequired = false;
+        this.minimumClientVersion = string.Empty;
+        this.clientUpdateMessage = string.Empty;
+        this.pendingVersionPolicyTask = null;
     }
 
     public void DisposeResources()
@@ -123,8 +135,12 @@ public sealed class PhoneWindow : Window
     public override void Draw()
     {
         this.ProcessBackgroundTasks();
-        this.TryBeginAutoLogin();
-        this.EnsureSessionHydrated();
+        this.EnsureClientVersionPolicy();
+        if (this.clientVersionChecked && !this.clientUpdateRequired)
+        {
+            this.TryBeginAutoLogin();
+            this.EnsureSessionHydrated();
+        }
         this.EnforceAspectRatio();
 
         var uiScale = this.GetUiScale();
@@ -157,7 +173,15 @@ public sealed class PhoneWindow : Window
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+            if (!this.clientVersionChecked)
+            {
+                this.DrawClientVersionCheckScreen();
+            }
+            else if (this.clientUpdateRequired)
+            {
+                this.DrawClientUpdateRequiredScreen();
+            }
+            else if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
             {
                 if (this.pendingAuthTask is { IsCompleted: false })
                 {
@@ -219,15 +243,72 @@ public sealed class PhoneWindow : Window
                     case PhoneTab.Staff:
                         this.DrawStaffApp();
                         break;
+                    default:
+                        this.DrawHomeScreen();
+                        break;
                 }
             }
         }
 
-        using var homeBar = ImRaii.Child("TomestonePhoneHomeBar", new Vector2(-1f, footerHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
-        if (homeBar.Success)
+        using (var footer = ImRaii.Child("TomestonePhoneFooter", new Vector2(-1f, footerHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
         {
-            this.DrawHomeButton();
+            if (footer.Success)
+            {
+                this.DrawHomeButton();
+            }
         }
+    }
+
+    private void EnsureClientVersionPolicy()
+    {
+        if (this.clientVersionChecked || this.pendingVersionPolicyTask is not null)
+        {
+            return;
+        }
+
+        this.pendingVersionPolicyTask = this.client.GetVersionPolicyAsync();
+    }
+
+    private void DrawClientVersionCheckScreen()
+    {
+        ImGui.TextDisabled("Checking client version...");
+        ImGui.Spacing();
+        ImGui.TextWrapped("TomestonePhone is checking whether this plugin build is still allowed by the server.");
+    }
+
+    private void DrawClientUpdateRequiredScreen()
+    {
+        ImGui.TextDisabled("Update Required");
+        ImGui.Spacing();
+        ImGui.TextWrapped(string.IsNullOrWhiteSpace(this.clientUpdateMessage)
+            ? "Please update TomestonePhone to the latest version before using the app."
+            : this.clientUpdateMessage);
+        if (!string.IsNullOrWhiteSpace(this.minimumClientVersion))
+        {
+            ImGui.Spacing();
+            ImGui.TextDisabled($"Minimum allowed version: {this.minimumClientVersion}");
+            ImGui.TextDisabled($"Your version: {this.GetCurrentClientVersion()}");
+        }
+    }
+
+    private string GetCurrentClientVersion()
+    {
+        return GetType().Assembly.GetName().Version?.ToString(4) ?? "0.0.0.0";
+    }
+
+    private bool IsClientVersionOutdated(string minimumVersion)
+    {
+        if (!Version.TryParse(minimumVersion, out var minimum))
+        {
+            return false;
+        }
+
+        if (!Version.TryParse(this.GetCurrentClientVersion(), out var current))
+        {
+            return false;
+        }
+
+        return current < minimum;
     }
     private void DrawHeader()
     {
@@ -356,7 +437,7 @@ public sealed class PhoneWindow : Window
         this.DrawAppIcon("Legal", "L", PhoneTab.Legal, 0, cell, new Vector4(0.93f, 0.85f, 0.62f, 1f), new Vector4(0.74f, 0.61f, 0.29f, 1f));
         this.DrawAppIcon("Privacy", "P", PhoneTab.Privacy, 0, cell, new Vector4(0.71f, 0.62f, 0.98f, 1f), new Vector4(0.43f, 0.34f, 0.8f, 1f));
         ImGui.SameLine(0f, spacing);
-        this.DrawAppIcon("Support", "?", PhoneTab.Support, this.state.SupportTickets.Count(item => item.Status == SupportTicketStatus.Open), cell, new Vector4(0.36f, 0.87f, 0.88f, 1f), new Vector4(0.2f, 0.59f, 0.64f, 1f));
+        this.DrawAppIcon("Support", "?", PhoneTab.Support, 0, cell, new Vector4(0.36f, 0.87f, 0.88f, 1f), new Vector4(0.2f, 0.59f, 0.64f, 1f));
         if (this.state.CurrentProfile.Role is AccountRole.Owner or AccountRole.Admin or AccountRole.Moderator)
         {
             ImGui.SameLine(0f, spacing);
@@ -433,12 +514,73 @@ public sealed class PhoneWindow : Window
                         this.selectedConversationId = null;
                         this.selectedConversationMessages = null;
                         this.selectedConversationDetail = null;
+                        this.staffTicketParticipantTarget = string.Empty;
                         return;
                     }
 
                     ImGui.TextDisabled(this.selectedConversationDetail.Name);
                     ImGui.TextWrapped(string.Join(", ", this.selectedConversationDetail.Members.Select(item => $"{item.DisplayName} [{item.Role}]")));
-                    if (this.selectedConversationDetail.IsGroup && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+
+                    var linkedTicketId = this.selectedConversationDetail.LinkedSupportTicketId;
+                    var isSupportConversation = linkedTicketId is not null;
+                    var isStaff = this.IsCurrentUserStaff();
+                    if (isSupportConversation && linkedTicketId is Guid ticketId && isStaff)
+                    {
+                        var actionWidth = this.Scale(100f);
+                        var firstRowWidth = Math.Max(this.Scale(140f), ImGui.GetContentRegionAvail().X - actionWidth * 2f - this.Scale(20f));
+                        ImGui.SetNextItemWidth(firstRowWidth);
+                        ImGui.InputTextWithHint("##support-ticket-participant", "Add by username or phone number", ref this.staffTicketParticipantTarget, 64);
+                        ImGui.SameLine();
+                        if (ImGui.Button("Add Person", new Vector2(actionWidth, this.Scale(30f))))
+                        {
+                            var targetAccountId = this.ResolveSingleConversationTarget(this.staffTicketParticipantTarget);
+                            if (targetAccountId is null)
+                            {
+                                this.pendingStatus = "Person could not be resolved";
+                            }
+                            else
+                            {
+                                var updatedTicket = this.client.AddSupportTicketParticipantAsync(this.configuration.AuthToken!, ticketId, targetAccountId.Value).GetAwaiter().GetResult();
+                                if (updatedTicket is null)
+                                {
+                                    this.pendingStatus = "Could not add participant";
+                                }
+                                else
+                                {
+                                    this.UpsertSupportTicket(updatedTicket);
+                                    this.staffTicketParticipantTarget = string.Empty;
+                                    this.OpenConversation(updatedTicket.ConversationId);
+                                    this.RefreshSnapshot();
+                                    this.RefreshStaffDashboard();
+                                    this.pendingStatus = "Participant added";
+                                }
+                            }
+                        }
+                        ImGui.SameLine();
+                        if (this.selectedConversationDetail.IsReadOnly)
+                        {
+                            ImGui.BeginDisabled();
+                            ImGui.Button("Closed", new Vector2(actionWidth, this.Scale(30f)));
+                            ImGui.EndDisabled();
+                        }
+                        else if (ImGui.Button("Close Ticket", new Vector2(actionWidth, this.Scale(30f))))
+                        {
+                            var updatedTicket = this.client.CloseSupportTicketAsync(this.configuration.AuthToken!, ticketId).GetAwaiter().GetResult();
+                            if (updatedTicket is null)
+                            {
+                                this.pendingStatus = "Could not close ticket";
+                            }
+                            else
+                            {
+                                this.UpsertSupportTicket(updatedTicket);
+                                this.OpenConversation(updatedTicket.ConversationId);
+                                this.RefreshSnapshot();
+                                this.RefreshStaffDashboard();
+                                this.pendingStatus = "Ticket closed";
+                            }
+                        }
+                    }
+                    else if (this.selectedConversationDetail.IsGroup && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
                     {
                         var addButtonWidth = this.Scale(104f);
                         var addInputWidth = Math.Max(this.Scale(140f), ImGui.GetContentRegionAvail().X - addButtonWidth - this.Scale(10f));
@@ -513,7 +655,6 @@ public sealed class PhoneWindow : Window
                     }
                 }
             }
-
             var selectedMessages = this.selectedConversationMessages;
             using (var scroll = ImRaii.Child("message-thread", new Vector2(-1f, threadHeight), true))
             {
@@ -545,25 +686,32 @@ public sealed class PhoneWindow : Window
             {
                 if (composer.Success)
                 {
-                    if (this.focusComposeOnNextDraw)
+                    if (this.selectedConversationDetail?.IsReadOnly == true)
                     {
-                        ImGui.SetKeyboardFocusHere();
-                        this.focusComposeOnNextDraw = false;
+                        ImGui.TextDisabled("This ticket is closed. You can still read the log, but no new messages can be sent.");
                     }
-                    if (this.clearComposeOnNextDraw)
+                    else
                     {
-                        this.composeMessage = string.Empty;
-                        this.clearComposeOnNextDraw = false;
+                        if (this.focusComposeOnNextDraw)
+                        {
+                            ImGui.SetKeyboardFocusHere();
+                            this.focusComposeOnNextDraw = false;
+                        }
+                        if (this.clearComposeOnNextDraw)
+                        {
+                            this.composeMessage = string.Empty;
+                            this.clearComposeOnNextDraw = false;
+                        }
+                        ImGui.InputTextMultiline($"##message-compose-{this.composeControlVersion}", ref this.composeMessage, 1024, new Vector2(-1f, this.Scale(58f)));
+                        var sendPressed = ImGui.IsItemActive() &&
+                            (ImGui.IsKeyPressed(ImGuiKey.Enter, false) || ImGui.IsKeyPressed(ImGuiKey.KeypadEnter, false));
+                        if (sendPressed && !ImGui.GetIO().KeyShift)
+                        {
+                            this.composeMessage = this.composeMessage.TrimEnd('\r', '\n');
+                            this.SendComposedMessage(selectedId);
+                        }
+                        ImGui.TextDisabled("Enter sends. Shift+Enter adds a new line.");
                     }
-                    ImGui.InputTextMultiline($"##message-compose-{this.composeControlVersion}", ref this.composeMessage, 1024, new Vector2(-1f, this.Scale(58f)));
-                    var sendPressed = ImGui.IsItemActive() &&
-                        (ImGui.IsKeyPressed(ImGuiKey.Enter, false) || ImGui.IsKeyPressed(ImGuiKey.KeypadEnter, false));
-                    if (sendPressed && !ImGui.GetIO().KeyShift)
-                    {
-                        this.composeMessage = this.composeMessage.TrimEnd('\r', '\n');
-                        this.SendComposedMessage(selectedId);
-                    }
-                    ImGui.TextDisabled("Enter sends. Shift+Enter adds a new line.");
                 }
             }
 
@@ -1088,6 +1236,72 @@ public sealed class PhoneWindow : Window
     {
         this.service.PluginInterface.SavePluginConfig(this.configuration);
     }
+    private void RefreshStaffDashboard()
+    {
+        if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+        {
+            return;
+        }
+
+        this.adminDashboard = this.client.GetAdminDashboardAsync(this.configuration.AuthToken).GetAwaiter().GetResult();
+    }
+
+    private void OpenConversation(Guid conversationId, PhoneTab tab = PhoneTab.Messages)
+    {
+        if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+        {
+            return;
+        }
+
+        this.selectedConversationId = conversationId;
+        this.selectedConversationMessages = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversationId).GetAwaiter().GetResult();
+        this.selectedConversationDetail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversationId).GetAwaiter().GetResult();
+        this.renderedMessageCount = 0;
+        this.scrollMessagesToBottom = true;
+        this.showHomeScreen = false;
+        this.activeTab = tab;
+        this.DismissNotificationsFor(conversationId);
+    }
+
+    private bool IsCurrentUserStaff()
+    {
+        return this.state.CurrentProfile.Role is AccountRole.Owner or AccountRole.Admin or AccountRole.Moderator;
+    }
+
+    private Guid? ResolveSingleConversationTarget(string rawTarget)
+    {
+        var resolved = this.ResolveConversationTargets(rawTarget).FirstOrDefault();
+        return resolved == Guid.Empty ? null : resolved;
+    }
+
+    private void UpsertSupportTicket(SupportTicketRecord ticket)
+    {
+        this.state.SupportTickets.RemoveAll(item => item.Id == ticket.Id);
+        this.state.SupportTickets.Insert(0, ticket);
+        if (this.adminDashboard is not null)
+        {
+            var tickets = this.adminDashboard.Tickets.Where(item => item.Id != ticket.Id).Prepend(ticket).ToList();
+            this.adminDashboard = new AdminDashboardSnapshot(this.adminDashboard.Accounts, this.adminDashboard.Reports, this.adminDashboard.AuditLogs, tickets);
+        }
+    }
+
+    private void OpenStaffConversation()
+    {
+        var staffConversation = this.state.Conversations.FirstOrDefault(item => item.IsGroup && string.Equals(item.DisplayName, "Staff Room", StringComparison.OrdinalIgnoreCase));
+        if (staffConversation is null)
+        {
+            this.RefreshSnapshot();
+            staffConversation = this.state.Conversations.FirstOrDefault(item => item.IsGroup && string.Equals(item.DisplayName, "Staff Room", StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (staffConversation is null)
+        {
+            this.pendingStatus = "Staff chat is not available yet";
+            return;
+        }
+
+        this.OpenConversation(staffConversation.Id);
+    }
     private void SendComposedMessage(Guid conversationId)
     {
         if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
@@ -1554,21 +1768,32 @@ public sealed class PhoneWindow : Window
 
     private void DrawSupportApp()
     {
-        using (var compose = ImRaii.Child("support-compose-card", new Vector2(-1f, this.Scale(214f)), false))
+        using (var compose = ImRaii.Child("support-compose-card", new Vector2(-1f, this.Scale(186f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
         {
             if (compose.Success)
             {
                 ImGui.TextDisabled("Support");
-                ImGui.TextWrapped("Open a ticket if you need help with account issues, moderation follow-up, or app problems.");
-                ImGui.InputText("Subject", ref this.supportSubject, 96);
-                ImGui.InputTextMultiline("Body", ref this.supportBody, 512, new Vector2(-1f, this.Scale(92f)));
-                if (ImGui.Button("Open Support Ticket", new Vector2(this.Scale(176f), this.Scale(36f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+                ImGui.TextWrapped("Open a support ticket to start a help chat with staff. Your ticket stays readable after staff close it.");
+                ImGui.TextDisabled("Subject");
+                ImGui.InputText("##support-subject", ref this.supportSubject, 96);
+                ImGui.TextDisabled("What do you need help with?");
+                ImGui.InputTextMultiline("##support-body", ref this.supportBody, 512, new Vector2(-1f, this.Scale(76f)));
+                if (ImGui.Button("Open Support Ticket", new Vector2(this.Scale(176f), this.Scale(34f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
                 {
-                    var ticket = this.client.CreateSupportTicketAsync(this.configuration.AuthToken, new CreateSupportTicketRequest(this.supportSubject, this.supportBody, false)).GetAwaiter().GetResult();
-                    this.state.SupportTickets.Insert(0, ticket);
-                    this.pendingStatus = "Support ticket opened";
-                    this.supportSubject = string.Empty;
-                    this.supportBody = string.Empty;
+                    try
+                    {
+                        var ticket = this.client.CreateSupportTicketAsync(this.configuration.AuthToken, new CreateSupportTicketRequest(this.supportSubject, this.supportBody, false)).GetAwaiter().GetResult();
+                        this.UpsertSupportTicket(ticket);
+                        this.supportSubject = string.Empty;
+                        this.supportBody = string.Empty;
+                        this.RefreshSnapshot();
+                        this.OpenConversation(ticket.ConversationId, PhoneTab.Support);
+                        this.pendingStatus = "Support ticket opened";
+                    }
+                    catch (Exception ex)
+                    {
+                        this.pendingStatus = ex.Message;
+                    }
                 }
             }
         }
@@ -1579,42 +1804,59 @@ public sealed class PhoneWindow : Window
             {
                 return;
             }
-            ImGui.TextDisabled("Recent Tickets");
+
+            ImGui.TextDisabled("Your Tickets");
             if (this.state.SupportTickets.Count == 0)
             {
                 ImGui.TextDisabled("No support tickets yet");
+                return;
             }
+
             foreach (var ticket in this.state.SupportTickets.OrderByDescending(item => item.CreatedAtUtc))
             {
-                using var item = ImRaii.Child($"ticket-{ticket.Id}", new Vector2(-1f, this.Scale(88f)), true);
+                using var item = ImRaii.Child($"ticket-{ticket.Id}", new Vector2(-1f, this.Scale(88f)), false);
                 if (!item.Success)
                 {
                     continue;
                 }
+
                 ImGui.TextUnformatted(ticket.Subject);
                 ImGui.TextDisabled($"{ticket.Status}  {ticket.CreatedAtUtc.LocalDateTime:g}");
-                ImGui.TextWrapped(ticket.Body);
+                if (!string.IsNullOrWhiteSpace(ticket.Body))
+                {
+                    ImGui.TextWrapped(ticket.Body);
+                }
+                if (ImGui.Button($"Open Chat##support-open-{ticket.Id}", new Vector2(this.Scale(132f), this.Scale(28f))))
+                {
+                    this.OpenConversation(ticket.ConversationId, PhoneTab.Support);
+                }
             }
         }
     }
 
     private void DrawStaffApp()
     {
-        if (this.state.CurrentProfile.Role is not (AccountRole.Owner or AccountRole.Admin or AccountRole.Moderator))
+        if (!this.IsCurrentUserStaff())
         {
             ImGui.TextDisabled("Staff access only.");
             return;
         }
 
-        using (var summary = ImRaii.Child("staff-summary-card", new Vector2(-1f, this.Scale(86f)), false))
+        using (var summary = ImRaii.Child("staff-summary-card", new Vector2(-1f, this.Scale(90f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
         {
             if (summary.Success)
             {
                 ImGui.TextDisabled("Staff Console");
-                ImGui.TextWrapped("Review accounts, reports, and audit activity from a single staff view.");
-                if (ImGui.Button("Refresh Staff Data", this.Scale(156f, 34f)) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+                ImGui.TextWrapped("Use staff chat, manage support tickets, and review accounts from one place.");
+                if (ImGui.Button("Refresh Staff Data", this.Scale(150f, 32f)))
                 {
-                    this.adminDashboard = this.client.GetAdminDashboardAsync(this.configuration.AuthToken).GetAwaiter().GetResult();
+                    this.RefreshStaffDashboard();
+                    this.RefreshSnapshot();
+                }
+                ImGui.SameLine();
+                if (ImGui.Button("Open Staff Chat", this.Scale(140f, 32f)))
+                {
+                    this.OpenStaffConversation();
                 }
             }
         }
@@ -1622,60 +1864,195 @@ public sealed class PhoneWindow : Window
         var dashboard = this.adminDashboard;
         if (dashboard is null)
         {
-            ImGui.TextDisabled("Refresh the staff console to load accounts, reports, and audit history.");
+            ImGui.TextDisabled("Refresh the staff console to load staff data.");
             return;
         }
 
-        using (var accounts = ImRaii.Child("staff-accounts-card", new Vector2(-1f, this.Scale(178f)), false))
+        using (var ticketSection = ImRaii.Child("staff-ticket-section", new Vector2(-1f, this.Scale(210f)), true))
         {
-            if (accounts.Success)
+            if (ticketSection.Success)
+            {
+                ImGui.TextDisabled("Support Tickets");
+                if (dashboard.Tickets.Count == 0)
+                {
+                    ImGui.TextDisabled("No support tickets.");
+                }
+                foreach (var ticket in dashboard.Tickets.OrderByDescending(item => item.CreatedAtUtc))
+                {
+                    using var ticketRow = ImRaii.Child($"staff-ticket-{ticket.Id}", new Vector2(-1f, this.Scale(116f)), false);
+                    if (!ticketRow.Success)
+                    {
+                        continue;
+                    }
+
+                    ImGui.TextUnformatted(ticket.Subject);
+                    ImGui.TextDisabled($"{ticket.OwnerDisplayName}  {ticket.Status}  {ticket.CreatedAtUtc.LocalDateTime:g}");
+                    if (!string.IsNullOrWhiteSpace(ticket.Body))
+                    {
+                        ImGui.TextWrapped(ticket.Body);
+                    }
+                    if (ImGui.Button($"Open Chat##staff-open-ticket-{ticket.Id}", this.Scale(114f, 28f)))
+                    {
+                        this.OpenConversation(ticket.ConversationId, PhoneTab.Staff);
+                    }
+                    if (ticket.Status == SupportTicketStatus.Open)
+                    {
+                        ImGui.SameLine();
+                        var addWidth = Math.Max(this.Scale(140f), ImGui.GetContentRegionAvail().X - this.Scale(214f));
+                        ImGui.SetNextItemWidth(addWidth);
+                        ImGui.InputTextWithHint($"##staff-ticket-add-{ticket.Id}", "Add participant", ref this.staffTicketParticipantTarget, 64);
+                        ImGui.SameLine();
+                        if (ImGui.Button($"Add##staff-ticket-add-btn-{ticket.Id}", this.Scale(42f, 28f)))
+                        {
+                            try
+                            {
+                                var targetAccountId = this.ResolveSingleConversationTarget(this.staffTicketParticipantTarget);
+                                if (targetAccountId is null)
+                                {
+                                    this.pendingStatus = "Person could not be resolved";
+                                }
+                                else
+                                {
+                                    var updated = this.client.AddSupportTicketParticipantAsync(this.configuration.AuthToken!, ticket.Id, targetAccountId.Value).GetAwaiter().GetResult();
+                                    if (updated is null)
+                                    {
+                                        this.pendingStatus = "Could not add participant";
+                                    }
+                                    else
+                                    {
+                                        this.UpsertSupportTicket(updated);
+                                        this.staffTicketParticipantTarget = string.Empty;
+                                        this.RefreshSnapshot();
+                                        this.RefreshStaffDashboard();
+                                        this.pendingStatus = "Participant added";
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                this.pendingStatus = ex.Message;
+                            }
+                        }
+                        ImGui.SameLine();
+                        if (ImGui.Button($"Close##staff-ticket-close-{ticket.Id}", this.Scale(52f, 28f)))
+                        {
+                            try
+                            {
+                                var updated = this.client.CloseSupportTicketAsync(this.configuration.AuthToken!, ticket.Id).GetAwaiter().GetResult();
+                                if (updated is null)
+                                {
+                                    this.pendingStatus = "Could not close ticket";
+                                }
+                                else
+                                {
+                                    this.UpsertSupportTicket(updated);
+                                    this.RefreshSnapshot();
+                                    this.RefreshStaffDashboard();
+                                    this.pendingStatus = "Ticket closed";
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                this.pendingStatus = ex.Message;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        using (var accountSection = ImRaii.Child("staff-account-section", new Vector2(-1f, this.Scale(250f)), true))
+        {
+            if (accountSection.Success)
             {
                 ImGui.TextDisabled("Accounts");
-                foreach (var account in dashboard.Accounts.Take(4))
+                ImGui.InputTextWithHint("##staff-search", "Search username, display, or phone", ref this.staffSearchQuery, 64);
+                var accounts = dashboard.Accounts
+                    .Where(account => string.IsNullOrWhiteSpace(this.staffSearchQuery)
+                        || account.Username.Contains(this.staffSearchQuery, StringComparison.OrdinalIgnoreCase)
+                        || account.DisplayName.Contains(this.staffSearchQuery, StringComparison.OrdinalIgnoreCase)
+                        || account.PhoneNumber.Contains(this.staffSearchQuery, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(account => account.Role)
+                    .ThenBy(account => account.Username)
+                    .ToList();
+
+                if (accounts.Count == 0)
                 {
-                    using var item = ImRaii.Child($"admin-account-{account.AccountId}", new Vector2(-1f, this.Scale(62f)), true);
+                    ImGui.TextDisabled("No matching accounts.");
+                }
+
+                foreach (var account in accounts)
+                {
+                    using var item = ImRaii.Child($"staff-account-{account.AccountId}", new Vector2(-1f, this.Scale(104f)), false);
                     if (!item.Success)
                     {
                         continue;
                     }
-                    ImGui.TextUnformatted($"{account.Username} ({account.Role}, {account.Status})");
-                    ImGui.TextDisabled(account.PhoneNumber);
-                    ImGui.TextDisabled(string.Join(", ", account.KnownIpAddresses));
+
+                    ImGui.TextUnformatted($"{account.DisplayName} (@{account.Username})");
+                    ImGui.TextDisabled($"{account.Role}  {account.Status}  {account.PhoneNumber}");
+                    if (account.KnownIpAddresses.Count > 0)
+                    {
+                        ImGui.TextDisabled(string.Join(", ", account.KnownIpAddresses));
+                    }
+
+                    if (this.state.CurrentProfile.Role == AccountRole.Owner && account.Role != AccountRole.Owner && account.AccountId != this.state.CurrentProfile.AccountId)
+                    {
+                        var roleWidth = (ImGui.GetContentRegionAvail().X - this.Scale(16f)) / 3f;
+                        if (ImGui.Button($"User##role-user-{account.AccountId}", new Vector2(roleWidth, this.Scale(28f))))
+                        {
+                            this.client.UpdateAccountRoleAsync(this.configuration.AuthToken!, new UpdateAccountRoleRequest(account.AccountId, AccountRole.User)).GetAwaiter().GetResult();
+                            this.RefreshSnapshot();
+                            this.RefreshStaffDashboard();
+                            this.pendingStatus = $"{account.Username} is now User";
+                        }
+                        ImGui.SameLine();
+                        if (ImGui.Button($"Moderator##role-mod-{account.AccountId}", new Vector2(roleWidth, this.Scale(28f))))
+                        {
+                            this.client.UpdateAccountRoleAsync(this.configuration.AuthToken!, new UpdateAccountRoleRequest(account.AccountId, AccountRole.Moderator)).GetAwaiter().GetResult();
+                            this.RefreshSnapshot();
+                            this.RefreshStaffDashboard();
+                            this.pendingStatus = $"{account.Username} is now Moderator";
+                        }
+                        ImGui.SameLine();
+                        if (ImGui.Button($"Admin##role-admin-{account.AccountId}", new Vector2(roleWidth, this.Scale(28f))))
+                        {
+                            this.client.UpdateAccountRoleAsync(this.configuration.AuthToken!, new UpdateAccountRoleRequest(account.AccountId, AccountRole.Admin)).GetAwaiter().GetResult();
+                            this.RefreshSnapshot();
+                            this.RefreshStaffDashboard();
+                            this.pendingStatus = $"{account.Username} is now Admin";
+                        }
+                    }
                 }
             }
         }
 
-        using (var reports = ImRaii.Child("staff-reports-card", new Vector2(-1f, this.Scale(224f)), false))
+        using (var reportSection = ImRaii.Child("staff-report-section", new Vector2(-1f, this.Scale(138f)), true))
         {
-            if (reports.Success)
+            if (reportSection.Success)
             {
                 ImGui.TextDisabled("Reports");
-                foreach (var report in dashboard.Reports.Take(4))
+                if (dashboard.Reports.Count == 0)
                 {
-                    using var item = ImRaii.Child($"report-{report.Id}", new Vector2(-1f, this.Scale(84f)), true);
-                    if (!item.Success)
+                    ImGui.TextDisabled("No open reports.");
+                }
+                else
+                {
+                    foreach (var report in dashboard.Reports.OrderByDescending(item => item.CreatedAtUtc).Take(4))
                     {
-                        continue;
-                    }
-                    ImGui.TextUnformatted($"{report.Category} [{report.Status}]");
-                    ImGui.TextDisabled($"Reporter: {report.ReporterDisplayName}");
-                    ImGui.TextWrapped(report.Reason);
-                    if (ImGui.Button($"Open Case Thread##{report.Id}", this.Scale(146f, 28f)) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
-                    {
-                        var result = this.client.ReplyToReportAsync(this.configuration.AuthToken, new ReportReplyRequest(report.Id, string.IsNullOrWhiteSpace(this.reportReplyBody) ? "Staff case thread opened." : this.reportReplyBody, true)).GetAwaiter().GetResult();
-                        this.pendingStatus = result is null ? "Case thread failed" : $"Case thread {result.ConversationId}";
+                        ImGui.TextWrapped($"{report.Category} [{report.Status}]  {report.ReporterDisplayName}");
+                        ImGui.TextDisabled(report.Reason);
                     }
                 }
-                ImGui.InputTextMultiline("Staff Reply Body", ref this.reportReplyBody, 512, new Vector2(-1f, this.Scale(72f)));
             }
         }
 
-        using (var audits = ImRaii.Child("staff-audit-card", new Vector2(-1f, this.Scale(154f)), false))
+        using (var auditSection = ImRaii.Child("staff-audit-section", new Vector2(-1f, this.Scale(138f)), true))
         {
-            if (audits.Success)
+            if (auditSection.Success)
             {
                 ImGui.TextDisabled("Audit Logs");
-                foreach (var log in dashboard.AuditLogs.Take(4))
+                foreach (var log in dashboard.AuditLogs.OrderByDescending(item => item.CreatedAtUtc).Take(4))
                 {
                     ImGui.TextWrapped($"{log.CreatedAtUtc.LocalDateTime:g}  {log.EventType}  {log.Summary}");
                 }
@@ -1684,12 +2061,14 @@ public sealed class PhoneWindow : Window
 
         if (this.state.CurrentProfile.Role == AccountRole.Owner)
         {
-            using var owner = ImRaii.Child("staff-owner-card", new Vector2(-1f, this.Scale(136f)), false);
+            using var owner = ImRaii.Child("staff-owner-card", new Vector2(-1f, this.Scale(132f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
             if (owner.Success)
             {
                 ImGui.TextDisabled("Owner Password Reset");
-                ImGui.InputText("Target Account Id", ref this.ownerResetTarget, 64);
-                ImGui.InputText("New Owner Password", ref this.ownerResetPassword, 64, ImGuiInputTextFlags.Password);
+                ImGui.TextDisabled("Target Account Id");
+                ImGui.InputText("##owner-reset-target", ref this.ownerResetTarget, 64);
+                ImGui.TextDisabled("New Owner Password");
+                ImGui.InputText("##owner-reset-password", ref this.ownerResetPassword, 64, ImGuiInputTextFlags.Password);
                 if (ImGui.Button("Reset Account Password", this.Scale(184f, 34f)) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken) && Guid.TryParse(this.ownerResetTarget, out var targetAccountId))
                 {
                     var success = this.client.ResetPasswordAsOwnerAsync(this.configuration.AuthToken, new AdminPasswordResetRequest(targetAccountId, this.ownerResetPassword)).GetAwaiter().GetResult();
@@ -2166,6 +2545,31 @@ public sealed class PhoneWindow : Window
 
     private void ProcessBackgroundTasks()
     {
+        if (this.pendingVersionPolicyTask is { IsCompleted: true })
+        {
+            try
+            {
+                var policy = this.pendingVersionPolicyTask.GetAwaiter().GetResult();
+                this.pendingVersionPolicyTask = null;
+                this.clientVersionChecked = true;
+                this.minimumClientVersion = policy.MinimumVersion ?? string.Empty;
+                this.clientUpdateMessage = policy.UpdateMessage ?? string.Empty;
+                this.clientUpdateRequired = !string.IsNullOrWhiteSpace(this.minimumClientVersion) && this.IsClientVersionOutdated(this.minimumClientVersion);
+                if (this.clientUpdateRequired)
+                {
+                    this.pendingStatus = "Update required";
+                    this.SignOutToGuestState(this.pendingStatus, false, false, false);
+                }
+            }
+            catch (Exception ex)
+            {
+                this.pendingVersionPolicyTask = null;
+                this.clientVersionChecked = true;
+                this.clientUpdateRequired = false;
+                this.pendingStatus = string.IsNullOrWhiteSpace(ex.Message) ? this.pendingStatus : ex.Message;
+            }
+        }
+
         if (this.pendingAuthTask is { IsCompleted: true })
         {
             var result = this.pendingAuthTask.GetAwaiter().GetResult();
@@ -2372,6 +2776,10 @@ public sealed class PhoneWindow : Window
     private sealed record AuthResult(string? Username, string? AuthToken, string? StatusMessage, Exception? Error);
 
     private sealed record PostAuthSnapshotResult(PhoneSnapshot? Snapshot, PhoneProfile? UpdatedProfile, Exception? Error);}
+
+
+
+
 
 
 

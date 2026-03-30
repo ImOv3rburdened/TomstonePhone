@@ -60,6 +60,14 @@ public sealed class TomestonePhoneClient : IDisposable
         return await response.Content.ReadFromJsonAsync<RegisterResponse>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Registration returned no payload.");
     }
 
+    public async Task<ClientVersionPolicyResult> GetVersionPolicyAsync(CancellationToken cancellationToken = default)
+    {
+        this.ApplyBaseAddress();
+        var response = await this.httpClient.GetAsync("/api/client/version-policy", cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ClientVersionPolicyResult>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Version policy returned no payload.");
+    }
+
     public async Task<PhoneSnapshot> GetSnapshotAsync(string token, CancellationToken cancellationToken = default)
     {
         this.ApplyBaseAddress();
@@ -270,6 +278,32 @@ public sealed class TomestonePhoneClient : IDisposable
         return await response.Content.ReadFromJsonAsync<SupportTicketRecord>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Support ticket returned no payload.");
     }
 
+    public async Task<SupportTicketRecord?> CloseSupportTicketAsync(string token, Guid ticketId, CancellationToken cancellationToken = default)
+    {
+        this.ApplyBaseAddress();
+        this.SetAuth(token);
+        var response = await this.httpClient.PostAsync($"/api/support/tickets/{ticketId}/close", null, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        return await response.Content.ReadFromJsonAsync<SupportTicketRecord>(cancellationToken: cancellationToken);
+    }
+
+    public async Task<SupportTicketRecord?> AddSupportTicketParticipantAsync(string token, Guid ticketId, Guid accountId, CancellationToken cancellationToken = default)
+    {
+        this.ApplyBaseAddress();
+        this.SetAuth(token);
+        var response = await this.httpClient.PostAsJsonAsync("/api/support/tickets/participants", new AddSupportTicketParticipantRequest(ticketId, accountId), cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        return await response.Content.ReadFromJsonAsync<SupportTicketRecord>(cancellationToken: cancellationToken);
+    }
+
     public async Task<AdminDashboardSnapshot> GetAdminDashboardAsync(string token, CancellationToken cancellationToken = default)
     {
         this.ApplyBaseAddress();
@@ -277,6 +311,16 @@ public sealed class TomestonePhoneClient : IDisposable
         var response = await this.httpClient.GetAsync("/api/admin/dashboard", cancellationToken);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<AdminDashboardSnapshot>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Admin dashboard returned no payload.");
+    }
+
+    public async Task<bool> UpdateAccountRoleAsync(string token, UpdateAccountRoleRequest request, CancellationToken cancellationToken = default)
+    {
+        this.ApplyBaseAddress();
+        this.SetAuth(token);
+        var response = await this.httpClient.PostAsJsonAsync("/api/admin/account-role", request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
+        return payload?.Success ?? false;
     }
 
     public async Task<bool> ResetPasswordAsOwnerAsync(string token, AdminPasswordResetRequest request, CancellationToken cancellationToken = default)
@@ -348,7 +392,7 @@ public sealed class TomestonePhoneClient : IDisposable
     }
 }
 
-
+public sealed record ClientVersionPolicyResult(string MinimumVersion, string UpdateMessage);
 
 
 

@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Version>0.1.7.6</Version>
+    <Version>0.1.7.7</Version>
     <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <RootNamespace>TomestonePhone</RootNamespace>
@@ -33,6 +33,7 @@
   </ItemGroup>
 
 </Project>
+
 
 
 

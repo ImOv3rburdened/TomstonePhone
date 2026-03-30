@@ -25,4 +25,6 @@ public interface IAccountService
     Task<AdminDashboardSnapshot> GetAdminDashboardAsync(Guid accountId, CancellationToken cancellationToken = default);
 
     Task<bool> ResetPasswordAsOwnerAsync(Guid actorAccountId, AdminPasswordResetRequest request, CancellationToken cancellationToken = default);
+
+    Task<bool> UpdateAccountRoleAsync(Guid actorAccountId, UpdateAccountRoleRequest request, CancellationToken cancellationToken = default);
 }
