@@ -65,7 +65,7 @@ public sealed class TomestonePhoneClient : IDisposable
         this.ApplyBaseAddress();
         this.SetAuth(token);
         var response = await this.httpClient.GetAsync("/api/phone/me", cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await this.EnsureSuccessAsync(response, "Account snapshot", cancellationToken);
         return await response.Content.ReadFromJsonAsync<PhoneSnapshot>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Snapshot returned no payload.");
     }
 
@@ -74,7 +74,7 @@ public sealed class TomestonePhoneClient : IDisposable
         this.ApplyBaseAddress();
         this.SetAuth(token);
         var response = await this.httpClient.PostAsJsonAsync("/api/account/game-identity", request, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await this.EnsureSuccessAsync(response, "Game identity update", cancellationToken);
         return await response.Content.ReadFromJsonAsync<PhoneProfile>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Game identity update returned no payload.");
     }
 
@@ -103,6 +103,16 @@ public sealed class TomestonePhoneClient : IDisposable
         var response = await this.httpClient.PostAsJsonAsync("/api/conversations/direct", request, cancellationToken);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<ConversationSummary>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Direct conversation returned no payload.");
+    }
+
+
+    public async Task<ConversationSummary> CreateConversationAsync(string token, CreateConversationRequest request, CancellationToken cancellationToken = default)
+    {
+        this.ApplyBaseAddress();
+        this.SetAuth(token);
+        var response = await this.httpClient.PostAsJsonAsync("/api/conversations", request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ConversationSummary>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Conversation creation returned no payload.");
     }
 
     public async Task<CallSummary> StartCallAsync(string token, StartCallRequest request, CancellationToken cancellationToken = default)
@@ -284,6 +294,23 @@ public sealed class TomestonePhoneClient : IDisposable
         this.httpClient.Dispose();
     }
 
+    private async Task EnsureSuccessAsync(HttpResponseMessage response, string operationName, CancellationToken cancellationToken)
+    {
+        if (response.IsSuccessStatusCode)
+        {
+            return;
+        }
+
+        var payload = await this.TryReadErrorPayloadAsync(response, cancellationToken);
+        var detail = payload?.Error;
+        if (string.IsNullOrWhiteSpace(detail))
+        {
+            detail = $"HTTP {(int)response.StatusCode}";
+        }
+
+        throw new InvalidOperationException($"{operationName} failed: {detail}");
+    }
+
     private async Task<ErrorPayload?> TryReadErrorPayloadAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         try
@@ -320,4 +347,9 @@ public sealed class TomestonePhoneClient : IDisposable
         public string? Error { get; set; }
     }
 }
+
+
+
+
+
 
