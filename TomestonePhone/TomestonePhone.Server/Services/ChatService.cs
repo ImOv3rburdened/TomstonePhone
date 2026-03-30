@@ -16,11 +16,13 @@ public sealed class ChatService : IChatService
     {
         return this.repository.WriteAsync(state =>
         {
+            SystemConversationCoordinator.EnsureStaffConversation(state);
             var conversation = new PersistedConversation
             {
                 Id = Guid.NewGuid(),
                 Name = request.Name,
                 IsGroup = request.IsGroup,
+                Kind = SystemConversationCoordinator.StandardConversationKind,
                 Members = request.ParticipantIds
                     .Append(ownerAccountId)
                     .Distinct()
@@ -42,6 +44,7 @@ public sealed class ChatService : IChatService
     {
         return this.repository.ReadAsync<IReadOnlyList<ConversationSummary>>(state =>
         {
+            SystemConversationCoordinator.EnsureStaffConversation(state);
             return state.Conversations
                 .Where(item => !item.IsDeleted && item.Members.Any(member => member.AccountId == accountId))
                 .Select(item => MapSummary(state, accountId, item))
@@ -54,6 +57,7 @@ public sealed class ChatService : IChatService
     {
         return this.repository.ReadAsync(state =>
         {
+            SystemConversationCoordinator.EnsureStaffConversation(state);
             var conversation = GetVisibleConversation(state, accountId, conversationId);
             return MapDetail(state, conversation);
         }, cancellationToken);
@@ -63,6 +67,7 @@ public sealed class ChatService : IChatService
     {
         return this.repository.ReadAsync(state =>
         {
+            SystemConversationCoordinator.EnsureStaffConversation(state);
             var conversation = GetVisibleConversation(state, accountId, conversationId);
             var messages = conversation.Messages
                 .OrderBy(item => item.SentAtUtc)
@@ -78,11 +83,24 @@ public sealed class ChatService : IChatService
     {
         return this.repository.WriteAsync<ConversationDetail?>(state =>
         {
+            SystemConversationCoordinator.EnsureStaffConversation(state);
             var conversation = GetVisibleConversation(state, actorAccountId, request.ConversationId);
+            var actor = state.Accounts.Single(item => item.Id == actorAccountId);
             var actorMember = conversation.Members.Single(member => member.AccountId == actorAccountId);
             var actorRole = ParseRole(actorMember.Role);
+            var isStaffActor = SystemConversationCoordinator.IsStaffRole(actor.Role);
 
-            if (actorRole is GroupMemberRole.Member)
+            if (conversation.LinkedSupportTicketId is not null && !isStaffActor)
+            {
+                return null;
+            }
+
+            if (conversation.Kind == SystemConversationCoordinator.StaffConversationKind && actor.Role != nameof(AccountRole.Owner))
+            {
+                return MapDetail(state, conversation);
+            }
+
+            if (conversation.LinkedSupportTicketId is null && actorRole is GroupMemberRole.Member)
             {
                 return null;
             }
@@ -104,17 +122,17 @@ public sealed class ChatService : IChatService
                     conversation.Members.RemoveAll(member => member.AccountId == removeId);
                     ReassignOwnerIfNeeded(conversation);
                     break;
-                case ChatModerationAction.PromoteModerator when actorRole == GroupMemberRole.Owner && request.TargetAccountId is { } promoteId:
+                case ChatModerationAction.PromoteModerator when conversation.LinkedSupportTicketId is null && actorRole == GroupMemberRole.Owner && request.TargetAccountId is { } promoteId:
                     SetMemberRole(conversation, promoteId, GroupMemberRole.Moderator);
                     break;
-                case ChatModerationAction.DemoteModerator when actorRole == GroupMemberRole.Owner && request.TargetAccountId is { } demoteId:
+                case ChatModerationAction.DemoteModerator when conversation.LinkedSupportTicketId is null && actorRole == GroupMemberRole.Owner && request.TargetAccountId is { } demoteId:
                     SetMemberRole(conversation, demoteId, GroupMemberRole.Member);
                     break;
-                case ChatModerationAction.TransferOwnership when actorRole == GroupMemberRole.Owner && request.TargetAccountId is { } transferId:
+                case ChatModerationAction.TransferOwnership when conversation.LinkedSupportTicketId is null && actorRole == GroupMemberRole.Owner && request.TargetAccountId is { } transferId:
                     SetMemberRole(conversation, actorAccountId, GroupMemberRole.Moderator);
                     SetMemberRole(conversation, transferId, GroupMemberRole.Owner);
                     break;
-                case ChatModerationAction.DeleteConversation when actorRole == GroupMemberRole.Owner:
+                case ChatModerationAction.DeleteConversation when conversation.LinkedSupportTicketId is null && actorRole == GroupMemberRole.Owner:
                     conversation.IsDeleted = true;
                     break;
             }
@@ -127,7 +145,13 @@ public sealed class ChatService : IChatService
     {
         return this.repository.WriteAsync(state =>
         {
+            SystemConversationCoordinator.EnsureStaffConversation(state);
             var conversation = GetVisibleConversation(state, senderAccountId, request.ConversationId);
+            if (conversation.IsReadOnly)
+            {
+                throw new InvalidOperationException("This conversation is closed.");
+            }
+
             if (!conversation.IsGroup)
             {
                 var otherAccountId = conversation.Members.Select(item => item.AccountId).First(id => id != senderAccountId);
@@ -185,12 +209,14 @@ public sealed class ChatService : IChatService
     {
         return this.repository.WriteAsync(state =>
         {
+            SystemConversationCoordinator.EnsureStaffConversation(state);
             var target = state.Accounts.Single(item =>
                 item.Username.Equals(request.UsernameOrPhoneNumber, StringComparison.OrdinalIgnoreCase)
                 || item.PhoneNumber == request.UsernameOrPhoneNumber);
 
             var existing = state.Conversations.FirstOrDefault(item =>
                 !item.IsDeleted
+                && item.Kind == SystemConversationCoordinator.StandardConversationKind
                 && !item.IsGroup
                 && item.Members.Count == 2
                 && item.Members.Any(member => member.AccountId == senderAccountId)
@@ -206,6 +232,7 @@ public sealed class ChatService : IChatService
                 Id = Guid.NewGuid(),
                 Name = target.DisplayName,
                 IsGroup = false,
+                Kind = SystemConversationCoordinator.StandardConversationKind,
                 Members =
                 [
                     new PersistedConversationMember { AccountId = senderAccountId, Role = nameof(GroupMemberRole.Owner), JoinedAtUtc = DateTimeOffset.UtcNow },
@@ -229,6 +256,8 @@ public sealed class ChatService : IChatService
             conversation.Id,
             conversation.Name,
             conversation.IsGroup,
+            conversation.IsReadOnly,
+            conversation.LinkedSupportTicketId,
             conversation.Members
                 .OrderBy(member => member.JoinedAtUtc)
                 .Select(member =>

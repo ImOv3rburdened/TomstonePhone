@@ -54,6 +54,12 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok", timeUtc = DateTimeOffset.UtcNow }));
+app.MapGet("/api/client/version-policy", (IConfiguration configuration) =>
+{
+    var minimumVersion = configuration["ClientVersionPolicy:MinimumVersion"] ?? string.Empty;
+    var updateMessage = configuration["ClientVersionPolicy:UpdateMessage"] ?? "Please update TomestonePhone to the latest version before using the app.";
+    return Results.Ok(new { minimumVersion, updateMessage });
+});
 
 app.MapPost("/api/auth/register", async (HttpContext context, RegisterRequest request, IAccountService accounts, CancellationToken cancellationToken) =>
 {
@@ -439,6 +445,31 @@ app.MapPost("/api/support/tickets", async (HttpContext context, CreateSupportTic
     return Results.Ok(await tickets.CreateTicketAsync(accountId.Value, request, cancellationToken));
 });
 
+app.MapPost("/api/support/tickets/{ticketId:guid}/close", async (HttpContext context, Guid ticketId, IAccountService accounts, ISupportTicketService tickets, CancellationToken cancellationToken) =>
+{
+    var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
+    if (accountId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var ticket = await tickets.CloseTicketAsync(accountId.Value, ticketId, cancellationToken);
+    return ticket is null ? Results.BadRequest() : Results.Ok(ticket);
+});
+
+app.MapPost("/api/support/tickets/participants", async (HttpContext context, AddSupportTicketParticipantRequest request, IAccountService accounts, ISupportTicketService tickets, CancellationToken cancellationToken) =>
+{
+    var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
+    if (accountId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var ticket = await tickets.AddParticipantAsync(accountId.Value, request.TicketId, request.AccountId, cancellationToken);
+    return ticket is null ? Results.BadRequest() : Results.Ok(ticket);
+});
+
+
 app.MapGet("/api/admin/dashboard", async (HttpContext context, IAccountService accounts, CancellationToken cancellationToken) =>
 {
     var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
@@ -455,6 +486,17 @@ app.MapGet("/api/admin/dashboard", async (HttpContext context, IAccountService a
     {
         return Results.Unauthorized();
     }
+});
+
+app.MapPost("/api/admin/account-role", async (HttpContext context, UpdateAccountRoleRequest request, IAccountService accounts, CancellationToken cancellationToken) =>
+{
+    var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
+    if (accountId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    return Results.Ok(new { success = await accounts.UpdateAccountRoleAsync(accountId.Value, request, cancellationToken) });
 });
 
 app.MapPost("/api/admin/reset-password", async (HttpContext context, AdminPasswordResetRequest request, IAccountService accounts, CancellationToken cancellationToken) =>
@@ -489,5 +531,6 @@ static async Task<bool> EnsureInteractiveAccessAsync(Guid accountId, IAccountSer
     var profile = await accounts.GetProfileAsync(accountId, cancellationToken);
     return profile.Status == AccountStatus.Active;
 }
+
 
 

@@ -204,7 +204,11 @@ public sealed class AccountService : IAccountService
                     Enum.TryParse<ReportStatus>(item.Status, out var status) ? status : ReportStatus.Open,
                     item.CreatedAtUtc)).ToList(),
                 state.AuditLogs.OrderByDescending(item => item.CreatedAtUtc).Select(item => new AuditLogRecord(item.Id, item.ActorAccountId, item.ActorDisplayName, item.EventType, item.Summary, item.CreatedAtUtc)).ToList(),
-                state.SupportTickets.OrderByDescending(item => item.CreatedAtUtc).Select(item => new SupportTicketRecord(item.Id, item.Subject, item.Body, Enum.TryParse<SupportTicketStatus>(item.Status, out var ticketStatus) ? ticketStatus : SupportTicketStatus.Open, item.CreatedAtUtc, item.IsModerationCase)).ToList());
+                state.SupportTickets.OrderByDescending(item => item.CreatedAtUtc).Select(item =>
+                {
+                    var owner = state.Accounts.Single(account => account.Id == item.AccountId);
+                    return new SupportTicketRecord(item.Id, item.ConversationId, item.AccountId, owner.DisplayName, item.Subject, item.Body, Enum.TryParse<SupportTicketStatus>(item.Status, out var ticketStatus) ? ticketStatus : SupportTicketStatus.Open, item.CreatedAtUtc, item.ClosedAtUtc, item.ClosedByAccountId, item.IsModerationCase);
+                }).ToList());
         }, cancellationToken);
     }
 
@@ -241,6 +245,38 @@ public sealed class AccountService : IAccountService
         }, cancellationToken);
     }
 
+
+    public Task<bool> UpdateAccountRoleAsync(Guid actorAccountId, UpdateAccountRoleRequest request, CancellationToken cancellationToken = default)
+    {
+        return this.repository.WriteAsync(state =>
+        {
+            var actor = state.Accounts.Single(item => item.Id == actorAccountId);
+            if (actor.Role != nameof(AccountRole.Owner) || request.AccountId == actorAccountId)
+            {
+                return false;
+            }
+
+            var account = state.Accounts.SingleOrDefault(item => item.Id == request.AccountId);
+            if (account is null || account.Role == nameof(AccountRole.Owner))
+            {
+                return false;
+            }
+
+            account.Role = request.Role.ToString();
+            SystemConversationCoordinator.EnsureStaffConversation(state);
+            state.AuditLogs.Add(new PersistedAuditLog
+            {
+                Id = Guid.NewGuid(),
+                ActorAccountId = actor.Id,
+                ActorDisplayName = actor.DisplayName,
+                EventType = "AccountRoleChanged",
+                Summary = $"Owner changed role for {account.Username} to {account.Role}.",
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+            });
+
+            return true;
+        }, cancellationToken);
+    }
     private static AdminAccountSummary MapAdminSummary(PersistedAccount account)
     {
         return new AdminAccountSummary(

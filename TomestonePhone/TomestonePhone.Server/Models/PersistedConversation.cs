@@ -8,6 +8,12 @@ public sealed class PersistedConversation
 
     public bool IsGroup { get; set; }
 
+    public string Kind { get; set; } = "Standard";
+
+    public Guid? LinkedSupportTicketId { get; set; }
+
+    public bool IsReadOnly { get; set; }
+
     public List<PersistedConversationMember> Members { get; set; } = [];
 
     public List<PersistedMessage> Messages { get; set; } = [];

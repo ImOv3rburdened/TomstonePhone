@@ -6,6 +6,8 @@ public sealed class PersistedSupportTicket
 
     public Guid AccountId { get; set; }
 
+    public Guid ConversationId { get; set; }
+
     public string Subject { get; set; } = string.Empty;
 
     public string Body { get; set; } = string.Empty;
@@ -17,4 +19,8 @@ public sealed class PersistedSupportTicket
     public string QuarantinedImagePath { get; set; } = string.Empty;
 
     public DateTimeOffset CreatedAtUtc { get; set; }
+
+    public DateTimeOffset? ClosedAtUtc { get; set; }
+
+    public Guid? ClosedByAccountId { get; set; }
 }
