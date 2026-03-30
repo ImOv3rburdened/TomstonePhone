@@ -368,3 +368,4 @@ public sealed class ChatService : IChatService
         next.Role = nameof(GroupMemberRole.Owner);
     }
 }
+
