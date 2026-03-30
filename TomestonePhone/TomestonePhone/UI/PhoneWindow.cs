@@ -1825,6 +1825,77 @@ public sealed class PhoneWindow : Window
         return this.configuration.AcceptedPrivacyPolicyVersion == PrivacyPolicy.Version;
     }
 
+    private string WrapBubbleText(string text, float maxWidth)
+    {
+        if (string.IsNullOrWhiteSpace(text) || maxWidth <= 0f)
+        {
+            return text;
+        }
+
+        var normalized = text.Replace("\r\n", "\n");
+        var output = new System.Text.StringBuilder();
+        var lines = normalized.Split('\n');
+        for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+        {
+            if (lineIndex > 0)
+            {
+                output.Append('\n');
+            }
+
+            var line = lines[lineIndex];
+            if (string.IsNullOrEmpty(line))
+            {
+                continue;
+            }
+
+            var currentLine = new System.Text.StringBuilder();
+            foreach (var word in line.Split(' '))
+            {
+                var currentText = currentLine.ToString();
+                var candidate = currentLine.Length == 0 ? word : currentText + " " + word;
+                if (ImGui.CalcTextSize(candidate).X <= maxWidth)
+                {
+                    currentLine.Clear();
+                    currentLine.Append(candidate);
+                    continue;
+                }
+
+                if (currentLine.Length > 0)
+                {
+                    output.Append(currentLine);
+                    output.Append('\n');
+                    currentLine.Clear();
+                }
+
+                if (ImGui.CalcTextSize(word).X <= maxWidth)
+                {
+                    currentLine.Append(word);
+                    continue;
+                }
+
+                var segment = new System.Text.StringBuilder();
+                foreach (var ch in word)
+                {
+                    var next = segment.ToString() + ch;
+                    if (segment.Length > 0 && ImGui.CalcTextSize(next).X > maxWidth)
+                    {
+                        output.Append(segment);
+                        output.Append('\n');
+                        segment.Clear();
+                    }
+
+                    segment.Append(ch);
+                }
+
+                currentLine.Append(segment);
+            }
+
+            output.Append(currentLine);
+        }
+
+        return output.ToString();
+    }
+
     private void DrawMessageBubble(ChatMessageRecord message)
     {
         var isSender = string.Equals(message.SenderDisplayName, this.state.CurrentProfile.DisplayName, StringComparison.OrdinalIgnoreCase)
@@ -1833,7 +1904,8 @@ public sealed class PhoneWindow : Window
         var bubblePadding = this.Scale(12f, 10f);
         var bubbleInnerWidth = Math.Max(this.Scale(96f), bubbleWidth - bubblePadding.X * 2f);
         var displayBody = message.IsDeletedForUsers ? "[Removed]" : message.Body ?? string.Empty;
-        var textHeight = string.IsNullOrWhiteSpace(displayBody) ? 0f : ImGui.CalcTextSize(displayBody, false, bubbleInnerWidth).Y;
+        var wrappedBody = string.IsNullOrWhiteSpace(displayBody) ? string.Empty : this.WrapBubbleText(displayBody, bubbleInnerWidth);
+        var textHeight = string.IsNullOrWhiteSpace(wrappedBody) ? 0f : ImGui.CalcTextSize(wrappedBody, false, bubbleInnerWidth).Y;
         var embedHeight = 0f;
         foreach (var embed in message.Embeds)
         {
@@ -1864,9 +1936,9 @@ public sealed class PhoneWindow : Window
         using (var textScope = ImRaii.PushColor(ImGuiCol.Text, textColor))
         {
             var wroteBody = false;
-            if (!string.IsNullOrWhiteSpace(displayBody))
+            if (!string.IsNullOrWhiteSpace(wrappedBody))
             {
-                ImGui.TextUnformatted(displayBody);
+                ImGui.TextUnformatted(wrappedBody);
                 wroteBody = true;
             }
 
