@@ -1779,7 +1779,7 @@ public sealed class PhoneWindow : Window
 
     private void DrawSupportApp()
     {
-        using (var compose = ImRaii.Child("support-compose-card", new Vector2(-1f, this.Scale(186f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+        using (var compose = ImRaii.Child("support-compose-card", new Vector2(-1f, this.Scale(236f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
         {
             if (compose.Success)
             {
@@ -2787,6 +2787,7 @@ public sealed class PhoneWindow : Window
     private sealed record AuthResult(string? Username, string? AuthToken, string? StatusMessage, Exception? Error);
 
     private sealed record PostAuthSnapshotResult(PhoneSnapshot? Snapshot, PhoneProfile? UpdatedProfile, Exception? Error);}
+
 
 
 
