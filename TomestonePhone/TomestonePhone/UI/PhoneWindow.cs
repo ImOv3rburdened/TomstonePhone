@@ -42,6 +42,9 @@ public sealed class PhoneWindow : Window
     private string composeMessage = string.Empty;
     private string composeEmbedUrl = string.Empty;
     private string directMessageTarget = string.Empty;
+    private string groupAddTarget = string.Empty;
+    private string groupCreateName = string.Empty;
+    private string groupCreateTargets = string.Empty;
     private string contactAddTarget = string.Empty;
     private string callTarget = string.Empty;
     private string friendRequestTarget = string.Empty;
@@ -51,10 +54,17 @@ public sealed class PhoneWindow : Window
     private string pendingExternalUrl = string.Empty;
     private int renderedMessageCount;
     private bool scrollMessagesToBottom = true;
+    private bool clearComposeOnNextDraw;
+    private bool focusComposeOnNextDraw;
+    private int composeControlVersion;
+    private Task<ConversationMessagePage>? pendingConversationMessagesTask;
+    private DateTimeOffset lastConversationRefreshUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset lastConversationListRefreshUtc = DateTimeOffset.MinValue;
     private Task<AuthResult>? pendingAuthTask;
     private Task<PostAuthSnapshotResult>? pendingSnapshotTask;
     private bool refreshOnNextDraw = true;
     private bool autoLoginAttempted;
+    private string? lastChatDebugMessage;
 
     public PhoneWindow(Service service, Configuration configuration, PhoneState state, TomestonePhoneClient client)
         : base("TomestonePhone###TomestonePhoneMain")
@@ -69,7 +79,7 @@ public sealed class PhoneWindow : Window
         this.SizeCondition = ImGuiCond.FirstUseEver;
         this.SizeConstraints = new WindowSizeConstraints
         {
-            MinimumSize = new Vector2(360, 779f),
+            MinimumSize = new Vector2(420f, 909f),
             MaximumSize = new Vector2(720, 1558f),
         };
         this.RespectCloseHotkey = true;
@@ -97,7 +107,7 @@ public sealed class PhoneWindow : Window
         var size = ImGui.GetWindowSize();
         var widthScale = size.X <= 0f ? 1f : size.X / DefaultWindowWidth;
         var heightScale = size.Y <= 0f ? 1f : size.Y / DefaultWindowHeight;
-        return Math.Clamp(Math.Min(widthScale, heightScale), 0.78f, 1f);
+        return Math.Clamp(Math.Min(widthScale, heightScale), 0.9f, 1f);
     }
 
     private float Scale(float value)
@@ -140,62 +150,76 @@ public sealed class PhoneWindow : Window
 
         var footerHeight = this.Scale(52f);
         var contentHeight = Math.Max(this.Scale(120f), ImGui.GetContentRegionAvail().Y - footerHeight);
-        using var content = ImRaii.Child("TomestonePhoneContent", new Vector2(-1f, contentHeight), true);
-        if (!content.Success)
+        using (var content = ImRaii.Child("TomestonePhoneContent", new Vector2(-1f, contentHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
         {
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
-        {
-            if (this.pendingAuthTask is { IsCompleted: false })
+            if (!content.Success)
             {
-                this.DrawSessionRestoreScreen();
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+            {
+                if (this.pendingAuthTask is { IsCompleted: false })
+                {
+                    this.DrawSessionRestoreScreen();
+                }
+                else
+                {
+                    this.DrawAuthStartScreen();
+                }
+            }
+            else if (!this.HasHydratedAuthenticatedProfile())
+            {
+                if (this.pendingAuthTask is { IsCompleted: false } || this.pendingSnapshotTask is { IsCompleted: false } || this.refreshOnNextDraw)
+                {
+                    this.DrawSessionRestoreScreen();
+                }
+                else if (this.showHomeScreen)
+                {
+                    this.DrawHomeScreen();
+                }
+                else
+                {
+                    this.activeTab = PhoneTab.Settings;
+                    this.DrawSettings();
+                }
+            }
+            else if (this.showHomeScreen)
+            {
+                this.DrawHomeScreen();
             }
             else
             {
-                this.DrawAuthStartScreen();
-            }
-        }
-        else if (!this.HasHydratedAuthenticatedProfile())
-        {
-            this.DrawSessionRestoreScreen();
-        }
-        else if (this.showHomeScreen)
-        {
-            this.DrawHomeScreen();
-        }
-        else
-        {
-            switch (this.activeTab)
-            {
-                case PhoneTab.Messages:
-                    this.DrawMessages();
-                    break;
-                case PhoneTab.Calls:
-                    this.DrawCalls();
-                    break;
-                case PhoneTab.Contacts:
-                    this.DrawContacts();
-                    break;
-                case PhoneTab.Friends:
-                    this.DrawFriends();
-                    break;
-                case PhoneTab.Settings:
-                    this.DrawSettings();
-                    break;
-                case PhoneTab.Legal:
-                    this.DrawLegalApp();
-                    break;
-                case PhoneTab.Privacy:
-                    this.DrawPrivacyApp();
-                    break;
-                case PhoneTab.Support:
-                    this.DrawSupportApp();
-                    break;
-                case PhoneTab.Staff:
-                    this.DrawStaffApp();
-                    break;
+                switch (this.activeTab)
+                {
+                    case PhoneTab.Messages:
+                        this.DrawMessages();
+                        break;
+                    case PhoneTab.Calls:
+                        this.DrawCalls();
+                        break;
+                    case PhoneTab.Contacts:
+                        this.DrawContacts();
+                        break;
+                    case PhoneTab.Friends:
+                        this.DrawFriends();
+                        break;
+                    case PhoneTab.Settings:
+                        this.DrawSettings();
+                        break;
+                    case PhoneTab.Legal:
+                        this.DrawLegalApp();
+                        break;
+                    case PhoneTab.Privacy:
+                        this.DrawPrivacyApp();
+                        break;
+                    case PhoneTab.Support:
+                        this.DrawSupportApp();
+                        break;
+                    case PhoneTab.Staff:
+                        this.DrawStaffApp();
+                        break;
+                }
             }
         }
 
@@ -205,7 +229,6 @@ public sealed class PhoneWindow : Window
             this.DrawHomeButton();
         }
     }
-
     private void DrawHeader()
     {
         var topStart = ImGui.GetCursorScreenPos();
@@ -394,39 +417,15 @@ public sealed class PhoneWindow : Window
 
     private void DrawMessages()
     {
-        using (var compose = ImRaii.Child("messages-compose-card", new Vector2(-1f, this.Scale(88f)), false))
-        {
-            if (compose.Success)
-            {
-                ImGui.TextDisabled("Start Conversation");
-                ImGui.InputTextWithHint("##direct-target", "Username or phone number", ref this.directMessageTarget, 64);
-                if (ImGui.Button("New Chat", this.Scale(112f, 32f)) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken) && !string.IsNullOrWhiteSpace(this.directMessageTarget))
-                {
-                    try
-                    {
-                        var conversation = this.client.StartDirectConversationAsync(this.configuration.AuthToken, new StartDirectConversationRequest(this.directMessageTarget)).GetAwaiter().GetResult();
-                        this.directMessageTarget = string.Empty;
-                        this.RefreshSnapshot();
-                        this.selectedConversationId = conversation.Id;
-                        this.selectedConversationMessages = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
-                        this.selectedConversationDetail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
-                        this.renderedMessageCount = 0;
-                        this.scrollMessagesToBottom = true;
-                        this.pendingStatus = "Conversation ready";
-                    }
-                    catch (Exception ex)
-                    {
-                        this.pendingStatus = ex.Message;
-                    }
-                }
-            }
-        }
-
         if (this.selectedConversationId is { } selectedId && this.selectedConversationMessages is not null)
         {
+            var detailHeight = this.selectedConversationDetail is null ? 0f : this.Scale(132f);
+            var composerHeight = this.Scale(92f);
+            var threadHeight = Math.Max(this.Scale(180f), ImGui.GetContentRegionAvail().Y - detailHeight - composerHeight - this.Scale(8f));
+
             if (this.selectedConversationDetail is not null)
             {
-                using var details = ImRaii.Child("messages-detail-card", new Vector2(-1f, this.Scale(122f)), false);
+                using var details = ImRaii.Child("messages-detail-card", new Vector2(-1f, detailHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
                 if (details.Success)
                 {
                     if (ImGui.Button("Back To List", this.Scale(120f, 30f)))
@@ -436,10 +435,50 @@ public sealed class PhoneWindow : Window
                         this.selectedConversationDetail = null;
                         return;
                     }
-                    ImGui.SameLine();
+
                     ImGui.TextDisabled(this.selectedConversationDetail.Name);
                     ImGui.TextWrapped(string.Join(", ", this.selectedConversationDetail.Members.Select(item => $"{item.DisplayName} [{item.Role}]")));
-                    if (!this.selectedConversationDetail.IsGroup && this.selectedConversationDetail.Members.FirstOrDefault(item => item.AccountId != this.state.CurrentProfile.AccountId) is { } otherMember && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+                    if (this.selectedConversationDetail.IsGroup && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+                    {
+                        var addButtonWidth = this.Scale(104f);
+                        var addInputWidth = Math.Max(this.Scale(140f), ImGui.GetContentRegionAvail().X - addButtonWidth - this.Scale(10f));
+                        ImGui.SetNextItemWidth(addInputWidth);
+                        ImGui.InputTextWithHint("##group-add-target", "Add by username or phone number", ref this.groupAddTarget, 64);
+                        ImGui.SameLine();
+                        if (ImGui.Button("Add Member", new Vector2(addButtonWidth, this.Scale(30f))) && !string.IsNullOrWhiteSpace(this.groupAddTarget))
+                        {
+                            try
+                            {
+                                var lookupConversation = this.client.StartDirectConversationAsync(this.configuration.AuthToken, new StartDirectConversationRequest(this.groupAddTarget)).GetAwaiter().GetResult();
+                                var lookupDetail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, lookupConversation.Id).GetAwaiter().GetResult();
+                                var targetMember = lookupDetail.Members.FirstOrDefault(item => item.AccountId != this.state.CurrentProfile.AccountId);
+                                if (targetMember is null)
+                                {
+                                    this.pendingStatus = "Person could not be resolved";
+                                }
+                                else
+                                {
+                                    var updated = this.client.ModerateConversationAsync(this.configuration.AuthToken, new ConversationModerationRequest(selectedId, ChatModerationAction.AddMember, targetMember.AccountId)).GetAwaiter().GetResult();
+                                    if (updated is null)
+                                    {
+                                        this.pendingStatus = "Could not add member";
+                                    }
+                                    else
+                                    {
+                                        this.selectedConversationDetail = updated;
+                                        this.RefreshSnapshot();
+                                        this.groupAddTarget = string.Empty;
+                                        this.pendingStatus = "Member added";
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                this.pendingStatus = ex.Message;
+                            }
+                        }
+                    }
+                    else if (!this.selectedConversationDetail.IsGroup && this.selectedConversationDetail.Members.FirstOrDefault(item => item.AccountId != this.state.CurrentProfile.AccountId) is { } otherMember && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
                     {
                         var actionWidth = (ImGui.GetContentRegionAvail().X - this.Scale(24f)) / 3f;
                         if (ImGui.Button("Save Contact", new Vector2(actionWidth, this.Scale(30f))))
@@ -475,8 +514,6 @@ public sealed class PhoneWindow : Window
                 }
             }
 
-            var composerHeight = this.Scale(134f);
-            var threadHeight = Math.Max(this.Scale(120f), ImGui.GetContentRegionAvail().Y - composerHeight);
             var selectedMessages = this.selectedConversationMessages;
             using (var scroll = ImRaii.Child("message-thread", new Vector2(-1f, threadHeight), true))
             {
@@ -489,10 +526,13 @@ public sealed class PhoneWindow : Window
                         this.renderedMessageCount = currentCount;
                         this.scrollMessagesToBottom = true;
                     }
-                    foreach (var message in selectedMessages.Messages)
+
+                    foreach (var message in currentMessages)
                     {
                         this.DrawMessageBubble(message);
+                        ImGui.Dummy(new Vector2(0f, this.Scale(4f)));
                     }
+
                     if (this.scrollMessagesToBottom)
                     {
                         ImGui.SetScrollHereY(1f);
@@ -501,37 +541,103 @@ public sealed class PhoneWindow : Window
                 }
             }
 
-            using (var composer = ImRaii.Child("message-compose-card", new Vector2(-1f, this.Scale(118f)), false))
+            using (var composer = ImRaii.Child("message-compose-card", new Vector2(-1f, composerHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
             {
                 if (composer.Success)
                 {
-                    ImGui.InputTextWithHint("##gif-url", "Optional direct GIF URL", ref this.composeEmbedUrl, 512);
-                    ImGui.TextDisabled("Direct .gif links render inline in chat");
-                    var composerWidth = Math.Max(this.Scale(120f), ImGui.GetContentRegionAvail().X - this.Scale(90f));
-                    var submitted = ImGui.InputTextMultiline("##message-compose", ref this.composeMessage, 1024, new Vector2(composerWidth, this.Scale(62f)), ImGuiInputTextFlags.EnterReturnsTrue);
-                    if (submitted)
+                    if (this.focusComposeOnNextDraw)
                     {
-                        if (ImGui.GetIO().KeyShift)
-                        {
-                            this.composeMessage += Environment.NewLine;
-                            ImGui.SetKeyboardFocusHere(-1);
-                        }
-                        else
-                        {
-                            this.SendComposedMessage(selectedId);
-                        }
+                        ImGui.SetKeyboardFocusHere();
+                        this.focusComposeOnNextDraw = false;
                     }
-                    ImGui.SameLine();
-                    if (ImGui.Button("Send", this.Scale(74f, 36f)))
+                    if (this.clearComposeOnNextDraw)
                     {
+                        this.composeMessage = string.Empty;
+                        this.clearComposeOnNextDraw = false;
+                    }
+                    ImGui.InputTextMultiline($"##message-compose-{this.composeControlVersion}", ref this.composeMessage, 1024, new Vector2(-1f, this.Scale(58f)));
+                    var sendPressed = ImGui.IsItemActive() &&
+                        (ImGui.IsKeyPressed(ImGuiKey.Enter, false) || ImGui.IsKeyPressed(ImGuiKey.KeypadEnter, false));
+                    if (sendPressed && !ImGui.GetIO().KeyShift)
+                    {
+                        this.composeMessage = this.composeMessage.TrimEnd('\r', '\n');
                         this.SendComposedMessage(selectedId);
                     }
+                    ImGui.TextDisabled("Enter sends. Shift+Enter adds a new line.");
                 }
             }
+
             return;
         }
 
-        using (var list = ImRaii.Child("messages-list-card", new Vector2(-1f, 0f), true))
+        using (var compose = ImRaii.Child("messages-compose-card", new Vector2(-1f, this.Scale(144f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+        {
+            if (compose.Success)
+            {
+                var buttonWidth = this.Scale(112f);
+                var inputWidth = Math.Max(this.Scale(140f), ImGui.GetContentRegionAvail().X - buttonWidth - this.Scale(10f));
+                ImGui.SetNextItemWidth(inputWidth);
+                ImGui.InputTextWithHint("##direct-target", "Username or phone number", ref this.directMessageTarget, 64);
+                ImGui.SameLine();
+                if (ImGui.Button("New Chat", new Vector2(buttonWidth, this.Scale(32f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken) && !string.IsNullOrWhiteSpace(this.directMessageTarget))
+                {
+                    try
+                    {
+                        var conversation = this.client.StartDirectConversationAsync(this.configuration.AuthToken, new StartDirectConversationRequest(this.directMessageTarget)).GetAwaiter().GetResult();
+                        this.directMessageTarget = string.Empty;
+                        this.RefreshSnapshot();
+                        this.selectedConversationId = conversation.Id;
+                        this.selectedConversationMessages = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
+                        this.selectedConversationDetail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
+                        this.renderedMessageCount = 0;
+                        this.scrollMessagesToBottom = true;
+                        this.pendingStatus = "Conversation ready";
+                    }
+                    catch (Exception ex)
+                    {
+                        this.pendingStatus = ex.Message;
+                    }
+                }
+
+                var groupButtonWidth = this.Scale(112f);
+                var groupNameWidth = Math.Max(this.Scale(120f), ImGui.GetContentRegionAvail().X - groupButtonWidth - this.Scale(10f));
+                ImGui.SetNextItemWidth(groupNameWidth);
+                ImGui.InputTextWithHint("##group-name", "Group name", ref this.groupCreateName, 64);
+                ImGui.SameLine();
+                if (ImGui.Button("New Group", new Vector2(groupButtonWidth, this.Scale(32f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken) && !string.IsNullOrWhiteSpace(this.groupCreateName) && !string.IsNullOrWhiteSpace(this.groupCreateTargets))
+                {
+                    try
+                    {
+                        var participantIds = this.ResolveConversationTargets(this.groupCreateTargets).ToList();
+                        if (participantIds.Count == 0)
+                        {
+                            this.pendingStatus = "Add at least one valid member";
+                        }
+                        else
+                        {
+                            var conversation = this.client.CreateConversationAsync(this.configuration.AuthToken, new CreateConversationRequest(this.groupCreateName.Trim(), true, participantIds)).GetAwaiter().GetResult();
+                            this.groupCreateName = string.Empty;
+                            this.groupCreateTargets = string.Empty;
+                            this.RefreshSnapshot();
+                            this.selectedConversationId = conversation.Id;
+                            this.selectedConversationMessages = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
+                            this.selectedConversationDetail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
+                            this.renderedMessageCount = 0;
+                            this.scrollMessagesToBottom = true;
+                            this.pendingStatus = "Group ready";
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        this.pendingStatus = ex.Message;
+                    }
+                }
+
+                ImGui.InputTextWithHint("##group-members", "Members, comma separated", ref this.groupCreateTargets, 256);
+            }
+        }
+        var listHeight = Math.Max(this.Scale(180f), ImGui.GetContentRegionAvail().Y);
+        using (var list = ImRaii.Child("messages-list-card", new Vector2(-1f, listHeight), true))
         {
             if (!list.Success)
             {
@@ -546,11 +652,6 @@ public sealed class PhoneWindow : Window
             }
             foreach (var conversation in this.state.Conversations.OrderByDescending(item => item.LastActivityUtc))
             {
-                using var item = ImRaii.Child($"conversation-{conversation.Id}", new Vector2(-1f, this.Scale(84f)), true);
-                if (!item.Success)
-                {
-                    continue;
-                }
                 ImGui.TextUnformatted(conversation.DisplayName);
                 if (conversation.UnreadCount > 0)
                 {
@@ -568,9 +669,11 @@ public sealed class PhoneWindow : Window
                     this.scrollMessagesToBottom = true;
                     this.DismissNotificationsFor(conversation.Id);
                 }
+                ImGui.Separator();
             }
         }
     }
+
 
     private void DrawCalls()
     {
@@ -625,7 +728,6 @@ public sealed class PhoneWindow : Window
             ImGui.TextDisabled($"{call.StartedUtc.LocalDateTime:g}  Duration {call.Duration:mm\\:ss}");
         }
     }
-
     private void DrawContacts()
     {
         using (var add = ImRaii.Child("contacts-add-card", new Vector2(-1f, this.Scale(96f)), false))
@@ -856,162 +958,125 @@ public sealed class PhoneWindow : Window
     private void DrawSettings()
     {
         var isAuthenticated = !string.IsNullOrWhiteSpace(this.configuration.AuthToken);
-        var sectionHeight = this.Scale(138f);
         if (!isAuthenticated)
         {
-            using (var card = ImRaii.Child("settings-auth-card", new Vector2(-1f, this.Scale(214f)), false))
+            ImGui.TextDisabled("Account");
+            ImGui.TextWrapped("Create an account or sign in to unlock the phone apps.");
+            if (this.configuration.LocalAccountLockout)
             {
-                if (card.Success)
-                {
-                    ImGui.TextDisabled("Account");
-                    ImGui.TextWrapped("Create an account or sign in to unlock the phone apps.");
-                    if (this.configuration.LocalAccountLockout)
-                    {
-                        ImGui.TextColored(new Vector4(0.95f, 0.45f, 0.45f, 1f), this.configuration.LocalAccountLockoutReason);
-                    }
-                    ImGui.InputTextWithHint("##settings-auth-user", "Username", ref this.loginUsername, 64);
-                    ImGui.InputTextWithHint("##settings-auth-pass", "Password", ref this.loginPassword, 64, ImGuiInputTextFlags.Password);
-                    var actionWidth = (ImGui.GetContentRegionAvail().X - this.Scale(12f)) * 0.5f;
-                    if (ImGui.Button("Create Account", new Vector2(actionWidth, this.Scale(36f))))
-                    {
-                        this.BeginRegister();
-                    }
-                    ImGui.SameLine();
-                    if (ImGui.Button("Sign In", new Vector2(actionWidth, this.Scale(36f))))
-                    {
-                        this.BeginLogin();
-                    }
-                }
+                ImGui.TextColored(new Vector4(0.95f, 0.45f, 0.45f, 1f), this.configuration.LocalAccountLockoutReason);
             }
-
-            using (var legal = ImRaii.Child("settings-legal-card", new Vector2(-1f, this.Scale(86f)), false))
+            ImGui.InputTextWithHint("##settings-auth-user", "Username", ref this.loginUsername, 64);
+            ImGui.InputTextWithHint("##settings-auth-pass", "Password", ref this.loginPassword, 64, ImGuiInputTextFlags.Password);
+            var authButtonWidth = (ImGui.GetContentRegionAvail().X - this.Scale(12f)) * 0.5f;
+            if (ImGui.Button("Create Account", new Vector2(authButtonWidth, this.Scale(34f))))
             {
-                if (legal.Success)
-                {
-                    ImGui.TextDisabled("Legal");
-                    ImGui.TextWrapped("Read the terms and privacy policy before signing up.");
-                    var buttonWidth = (ImGui.GetContentRegionAvail().X - this.Scale(12f)) * 0.5f;
-                    if (ImGui.Button("Terms", new Vector2(buttonWidth, this.Scale(34f))))
-                    {
-                        this.activeTab = PhoneTab.Legal;
-                        return;
-                    }
-                    ImGui.SameLine();
-                    if (ImGui.Button("Privacy", new Vector2(buttonWidth, this.Scale(34f))))
-                    {
-                        this.activeTab = PhoneTab.Privacy;
-                        return;
-                    }
-                }
+                this.BeginRegister();
             }
-
+            ImGui.SameLine();
+            if (ImGui.Button("Sign In", new Vector2(authButtonWidth, this.Scale(34f))))
+            {
+                this.BeginLogin();
+            }
+            ImGui.Separator();
+            ImGui.TextDisabled("Legal");
+            if (ImGui.Button("Terms", new Vector2(-1f, this.Scale(30f))))
+            {
+                this.activeTab = PhoneTab.Legal;
+                return;
+            }
+            if (ImGui.Button("Privacy", new Vector2(-1f, this.Scale(30f))))
+            {
+                this.activeTab = PhoneTab.Privacy;
+                return;
+            }
+            this.SaveConfiguration();
             return;
         }
 
-        using (var profile = ImRaii.Child("settings-profile-card", new Vector2(-1f, this.Scale(150f)), false))
+        ImGui.TextDisabled("Your Number");
+        var phoneNumber = this.GetPhoneNumberForUi();
+        if (ImGui.Button(phoneNumber, new Vector2(-1f, this.Scale(36f))))
         {
-            if (profile.Success)
+            ImGui.SetClipboardText(phoneNumber);
+            this.pendingStatus = "Phone number copied";
+        }
+        ImGui.TextDisabled($"Username: {this.GetUsernameForUi()}");
+        if (this.configuration.LocalAccountLockout)
+        {
+            ImGui.TextColored(new Vector4(0.95f, 0.45f, 0.45f, 1f), this.configuration.LocalAccountLockoutReason);
+        }
+
+        if (ImGui.Button("Terms", new Vector2(-1f, this.Scale(30f))))
+        {
+            this.activeTab = PhoneTab.Legal;
+            return;
+        }
+        if (ImGui.Button("Privacy", new Vector2(-1f, this.Scale(30f))))
+        {
+            this.activeTab = PhoneTab.Privacy;
+            return;
+        }
+        if (ImGui.Button("Log Out", new Vector2(-1f, this.Scale(30f))))
+        {
+            this.SignOutToGuestState("Signed out");
+            return;
+        }
+
+        ImGui.Separator();
+        ImGui.TextDisabled("Appearance");
+        this.DrawEditableText("Accent Color", this.configuration.AccentColorHex, value => this.configuration.AccentColorHex = value, 16);
+        var lockViewport = this.configuration.LockViewport;
+        if (ImGui.Checkbox("Lock viewport inside phone frame", ref lockViewport))
+        {
+            this.configuration.LockViewport = lockViewport;
+        }
+        this.DrawNotificationAnchorPicker();
+
+        ImGui.Separator();
+        ImGui.TextDisabled("Account");
+        var muted = this.state.CurrentProfile.NotificationsMuted;
+        if (ImGui.Checkbox("Mute notifications", ref muted))
+        {
+            this.state.CurrentProfile = this.state.CurrentProfile with { NotificationsMuted = muted };
+        }
+        ImGui.TextDisabled("Current Password");
+        ImGui.InputText("##CurrentPassword", ref this.oldPassword, 64, ImGuiInputTextFlags.Password);
+        ImGui.TextDisabled("New Password");
+        ImGui.InputText("##NewPassword", ref this.newPassword, 64, ImGuiInputTextFlags.Password);
+        ImGui.TextDisabled("Confirm Password");
+        ImGui.InputText("##ConfirmPassword", ref this.confirmPassword, 64, ImGuiInputTextFlags.Password);
+        if (ImGui.Button("Change Password", new Vector2(-1f, this.Scale(32f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+        {
+            if (this.newPassword != this.confirmPassword)
             {
-                ImGui.TextDisabled("Your Number");
-                var phoneNumber = string.IsNullOrWhiteSpace(this.state.CurrentProfile.PhoneNumber) ? "Unavailable" : this.state.CurrentProfile.PhoneNumber;
-                if (ImGui.Button(phoneNumber, new Vector2(Math.Max(this.Scale(160f), ImGui.GetContentRegionAvail().X), this.Scale(38f))))
-                {
-                    ImGui.SetClipboardText(phoneNumber);
-                    this.pendingStatus = "Phone number copied";
-                }
-                ImGui.TextDisabled($"Username: {this.state.CurrentProfile.Username}");
-                if (this.configuration.LocalAccountLockout)
-                {
-                    ImGui.TextColored(new Vector4(0.95f, 0.45f, 0.45f, 1f), this.configuration.LocalAccountLockoutReason);
-                }
-                var actionWidth = (ImGui.GetContentRegionAvail().X - this.Scale(24f)) / 3f;
-                if (ImGui.Button("Terms", new Vector2(actionWidth, this.Scale(34f))))
-                {
-                    this.activeTab = PhoneTab.Legal;
-                    return;
-                }
-                ImGui.SameLine();
-                if (ImGui.Button("Privacy", new Vector2(actionWidth, this.Scale(34f))))
-                {
-                    this.activeTab = PhoneTab.Privacy;
-                    return;
-                }
-                ImGui.SameLine();
-                if (ImGui.Button("Log Out", new Vector2(actionWidth, this.Scale(34f))))
-                {
-                    this.configuration.AuthToken = null;
-                    this.configuration.Username = null;
-                    this.pendingStatus = "Signed out";
-                    this.SaveConfiguration();
-                    return;
-                }
+                this.pendingStatus = "New passwords do not match";
+            }
+            else
+            {
+                var success = this.client.ChangePasswordAsync(this.configuration.AuthToken, new PasswordResetSelfRequest(this.oldPassword, this.newPassword, this.confirmPassword)).GetAwaiter().GetResult();
+                this.pendingStatus = success ? "Password updated" : "Password update failed";
             }
         }
 
-        using (var appearance = ImRaii.Child("settings-appearance-card", new Vector2(-1f, sectionHeight), false))
+        ImGui.Separator();
+        ImGui.TextDisabled("Blocked Contacts");
+        if (this.state.BlockedContacts.Count == 0)
         {
-            if (appearance.Success)
-            {
-                ImGui.TextDisabled("Appearance");
-                this.DrawEditableText("Accent Color", this.configuration.AccentColorHex, value => this.configuration.AccentColorHex = value, 16);
-                var lockViewport = this.configuration.LockViewport;
-                if (ImGui.Checkbox("Lock viewport inside phone frame", ref lockViewport))
-                {
-                    this.configuration.LockViewport = lockViewport;
-                }
-                this.DrawNotificationAnchorPicker();
-            }
+            ImGui.TextDisabled("No blocked contacts");
         }
-
-        using (var account = ImRaii.Child("settings-account-card", new Vector2(-1f, this.Scale(236f)), false))
+        else
         {
-            if (account.Success)
+            foreach (var blockedContact in this.state.BlockedContacts.Take(3))
             {
-                ImGui.TextDisabled("Account");
-                var muted = this.state.CurrentProfile.NotificationsMuted;
-                if (ImGui.Checkbox("Mute notifications", ref muted))
+                ImGui.TextUnformatted(blockedContact.DisplayName);
+                if (ImGui.Button($"Unblock##{blockedContact.Id}", new Vector2(-1f, this.Scale(28f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
                 {
-                    this.state.CurrentProfile = this.state.CurrentProfile with { NotificationsMuted = muted };
-                }
-                ImGui.InputText("Current Password", ref this.oldPassword, 64, ImGuiInputTextFlags.Password);
-                ImGui.InputText("New Password", ref this.newPassword, 64, ImGuiInputTextFlags.Password);
-                ImGui.InputText("Confirm Password", ref this.confirmPassword, 64, ImGuiInputTextFlags.Password);
-                if (ImGui.Button("Change Password", new Vector2(this.Scale(156f), this.Scale(34f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
-                {
-                    if (this.newPassword != this.confirmPassword)
+                    var success = this.client.UnblockAccountAsync(this.configuration.AuthToken, blockedContact.Id).GetAwaiter().GetResult();
+                    this.pendingStatus = success ? "Unblocked" : "Unblock failed";
+                    if (success)
                     {
-                        this.pendingStatus = "New passwords do not match";
-                    }
-                    else
-                    {
-                        var success = this.client.ChangePasswordAsync(this.configuration.AuthToken, new PasswordResetSelfRequest(this.oldPassword, this.newPassword, this.confirmPassword)).GetAwaiter().GetResult();
-                        this.pendingStatus = success ? "Password updated" : "Password update failed";
-                    }
-                }
-            }
-        }
-
-        using (var blocked = ImRaii.Child("settings-blocked-card", new Vector2(-1f, this.Scale(170f)), false))
-        {
-            if (blocked.Success)
-            {
-                ImGui.TextDisabled("Blocked Contacts");
-                if (this.state.BlockedContacts.Count == 0)
-                {
-                    ImGui.TextDisabled("No blocked contacts");
-                }
-                foreach (var blockedContact in this.state.BlockedContacts.Take(6))
-                {
-                    ImGui.TextUnformatted(blockedContact.DisplayName);
-                    ImGui.SameLine();
-                    if (ImGui.Button($"Unblock##{blockedContact.Id}", new Vector2(this.Scale(86f), this.Scale(28f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
-                    {
-                        var success = this.client.UnblockAccountAsync(this.configuration.AuthToken, blockedContact.Id).GetAwaiter().GetResult();
-                        this.pendingStatus = success ? "Unblocked" : "Unblock failed";
-                        if (success)
-                        {
-                            this.RefreshSnapshot();
-                        }
+                        this.RefreshSnapshot();
                     }
                 }
             }
@@ -1019,7 +1084,6 @@ public sealed class PhoneWindow : Window
 
         this.SaveConfiguration();
     }
-
     private void SaveConfiguration()
     {
         this.service.PluginInterface.SavePluginConfig(this.configuration);
@@ -1054,7 +1118,15 @@ public sealed class PhoneWindow : Window
             this.selectedConversationMessages = new ConversationMessagePage(conversationId, this.selectedConversationMessages?.Messages.Append(sent).ToList() ?? [sent]);
             this.composeMessage = string.Empty;
             this.composeEmbedUrl = string.Empty;
+            this.composeControlVersion++;
+            this.clearComposeOnNextDraw = true;
+            this.focusComposeOnNextDraw = true;
             this.scrollMessagesToBottom = true;
+            this.lastConversationRefreshUtc = DateTimeOffset.MinValue;
+            if (this.pendingConversationMessagesTask is null)
+            {
+                this.pendingConversationMessagesTask = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversationId);
+            }
         }
         catch (Exception ex)
         {
@@ -1091,13 +1163,59 @@ public sealed class PhoneWindow : Window
 
     private void DrawEditableText(string label, string value, Action<string> setter, int maxLength)
     {
+        ImGui.TextDisabled(label);
         var buffer = value;
-        if (ImGui.InputText(label, ref buffer, maxLength))
+        if (ImGui.InputText($"##{label}", ref buffer, maxLength))
         {
             setter(buffer);
         }
     }
 
+    private void AnnounceDebugOnce(string message, Exception? ex = null)
+    {
+        var trimmed = string.IsNullOrWhiteSpace(message) ? "TomestonePhone error." : message.Trim();
+        if (string.Equals(this.lastChatDebugMessage, trimmed, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        this.lastChatDebugMessage = trimmed;
+        this.service.ChatGui.Print($"[TomestonePhone] {trimmed}");
+        if (ex is not null)
+        {
+            this.service.Log.Warning(ex, trimmed);
+        }
+    }
+
+    private void ClearDebugAnnouncement()
+    {
+        this.lastChatDebugMessage = null;
+    }
+
+    private string GetUsernameForUi()
+    {
+        if (!string.IsNullOrWhiteSpace(this.state.CurrentProfile.Username) && !string.Equals(this.state.CurrentProfile.Username, "Guest", StringComparison.OrdinalIgnoreCase))
+        {
+            return this.state.CurrentProfile.Username;
+        }
+
+        return string.IsNullOrWhiteSpace(this.configuration.Username) ? "Guest" : this.configuration.Username!;
+    }
+
+    private string GetDisplayNameForUi()
+    {
+        if (!string.IsNullOrWhiteSpace(this.state.CurrentProfile.DisplayName) && !string.Equals(this.state.CurrentProfile.Username, "Guest", StringComparison.OrdinalIgnoreCase))
+        {
+            return this.state.CurrentProfile.DisplayName;
+        }
+
+        return this.GetUsernameForUi();
+    }
+
+    private string GetPhoneNumberForUi()
+    {
+        return string.IsNullOrWhiteSpace(this.state.CurrentProfile.PhoneNumber) ? "Unavailable" : this.state.CurrentProfile.PhoneNumber;
+    }
     private void RefreshSnapshot()
     {
         this.QueueSnapshotRefresh();
@@ -1116,9 +1234,10 @@ public sealed class PhoneWindow : Window
         }
 
         var authToken = this.configuration.AuthToken!;
+        var identity = this.GetCurrentGameIdentity();
         this.refreshOnNextDraw = false;
         this.pendingStatus = "Refreshing account...";
-        this.pendingSnapshotTask = this.LoadPostAuthSnapshotAsync(authToken);
+        this.pendingSnapshotTask = this.LoadPostAuthSnapshotAsync(authToken, identity);
     }
 
     private void HandleAuthFailure(Exception ex)
@@ -1143,6 +1262,7 @@ public sealed class PhoneWindow : Window
         }
 
         this.pendingStatus = string.IsNullOrWhiteSpace(ex.Message) ? "Authentication failed" : ex.Message;
+        this.AnnounceDebugOnce($"Auth failure: {this.pendingStatus}", ex);
     }
 
     private void DrawHomeButton()
@@ -1159,14 +1279,24 @@ public sealed class PhoneWindow : Window
         var hitPos = ImGui.GetCursorScreenPos();
         if (ImGui.Button("##Home", hitSize))
         {
-            this.showHomeScreen = true;
             this.selectedConversationId = null;
             this.selectedConversationMessages = null;
             this.selectedConversationDetail = null;
-            this.activeTab = PhoneTab.Messages;
-            if (!string.IsNullOrWhiteSpace(this.configuration.AuthToken) && this.pendingSnapshotTask is not { IsCompleted: false })
+
+            if (!string.IsNullOrWhiteSpace(this.configuration.AuthToken))
             {
-                this.pendingStatus = $"Synced {DateTime.Now:t}";
+                this.showHomeScreen = true;
+                this.activeTab = PhoneTab.Messages;
+                if (this.pendingSnapshotTask is not { IsCompleted: false } && this.HasHydratedAuthenticatedProfile())
+                {
+                    this.pendingStatus = $"Synced {DateTime.Now:t}";
+                }
+            }
+            else
+            {
+                this.showHomeScreen = false;
+                this.activeTab = PhoneTab.Settings;
+                this.refreshOnNextDraw = false;
             }
         }
 
@@ -1279,8 +1409,9 @@ public sealed class PhoneWindow : Window
 
     private void DrawNotificationAnchorPicker()
     {
+        ImGui.TextDisabled("Notification Spot");
         var anchor = this.configuration.NotificationAnchor;
-        if (ImGui.BeginCombo("Notification Spot", anchor.ToString()))
+        if (ImGui.BeginCombo("##NotificationSpot", anchor.ToString()))
         {
             foreach (NotificationAnchor value in Enum.GetValues(typeof(NotificationAnchor)))
             {
@@ -1698,20 +1829,20 @@ public sealed class PhoneWindow : Window
     {
         var isSender = string.Equals(message.SenderDisplayName, this.state.CurrentProfile.DisplayName, StringComparison.OrdinalIgnoreCase)
             || string.Equals(message.SenderDisplayName, this.state.CurrentProfile.Username, StringComparison.OrdinalIgnoreCase);
-        var bubbleWidth = Math.Max(140f, ImGui.GetContentRegionAvail().X * 0.76f);
-        var bubblePadding = new Vector2(12f, 10f);
-        var bubbleInnerWidth = Math.Max(96f, bubbleWidth - bubblePadding.X * 2f);
+        var bubbleWidth = Math.Max(this.Scale(140f), ImGui.GetContentRegionAvail().X * 0.76f);
+        var bubblePadding = this.Scale(12f, 10f);
+        var bubbleInnerWidth = Math.Max(this.Scale(96f), bubbleWidth - bubblePadding.X * 2f);
         var displayBody = message.IsDeletedForUsers ? "[Removed]" : message.Body ?? string.Empty;
         var textHeight = string.IsNullOrWhiteSpace(displayBody) ? 0f : ImGui.CalcTextSize(displayBody, false, bubbleInnerWidth).Y;
         var embedHeight = 0f;
         foreach (var embed in message.Embeds)
         {
             embedHeight += this.gifEmbedRenderer.IsGifUrl(embed.Url)
-                ? 188f
-                : ImGui.CalcTextSize(embed.Url, false, bubbleInnerWidth).Y + 8f;
+                ? this.Scale(188f)
+                : ImGui.CalcTextSize(embed.Url, false, bubbleInnerWidth).Y + this.Scale(8f);
         }
 
-        var bubbleHeight = Math.Max(36f, textHeight + embedHeight + bubblePadding.Y * 2f + (message.Embeds.Count > 0 && textHeight > 0f ? 6f : 0f));
+        var bubbleHeight = Math.Max(this.Scale(36f), textHeight + embedHeight + bubblePadding.Y * 2f + (message.Embeds.Count > 0 && textHeight > 0f ? this.Scale(6f) : 0f));
         var cursorX = ImGui.GetCursorPosX();
         var availableWidth = ImGui.GetContentRegionAvail().X;
         if (isSender)
@@ -1726,7 +1857,7 @@ public sealed class PhoneWindow : Window
             : new Vector4(0.94f, 0.94f, 0.96f, 0.98f);
         var textColor = isSender ? Vector4.One : new Vector4(0.1f, 0.1f, 0.12f, 1f);
         var draw = ImGui.GetWindowDrawList();
-        draw.AddRectFilled(bubbleMin, bubbleMax, ImGui.GetColorU32(bubbleColor), 18f);
+        draw.AddRectFilled(bubbleMin, bubbleMax, ImGui.GetColorU32(bubbleColor), this.Scale(18f));
 
         ImGui.SetCursorScreenPos(bubbleMin + bubblePadding);
         ImGui.PushTextWrapPos(bubbleMin.X + bubblePadding.X + bubbleInnerWidth);
@@ -1764,7 +1895,7 @@ public sealed class PhoneWindow : Window
         }
 
         ImGui.PopTextWrapPos();
-        ImGui.SetCursorScreenPos(new Vector2(bubbleMin.X, bubbleMax.Y + 6f));
+        ImGui.SetCursorScreenPos(new Vector2(bubbleMin.X, bubbleMax.Y + this.Scale(6f)));
         var meta = !isSender
             ? $"{message.SenderDisplayName}  {message.SentAtUtc.LocalDateTime:g}"
             : message.SentAtUtc.LocalDateTime.ToString("g");
@@ -1895,16 +2026,70 @@ public sealed class PhoneWindow : Window
             return;
         }
 
-        var missingProfile = this.state.CurrentProfile.AccountId == Guid.Empty
-            || string.IsNullOrWhiteSpace(this.state.CurrentProfile.PhoneNumber)
-            || string.Equals(this.state.CurrentProfile.Username, "Guest", StringComparison.OrdinalIgnoreCase);
-
-        if (!this.refreshOnNextDraw && !missingProfile)
+        if (!this.refreshOnNextDraw)
         {
             return;
         }
 
         this.QueueSnapshotRefresh();
+    }
+
+
+    private IReadOnlyList<Guid> ResolveConversationTargets(string rawTargets)
+    {
+        if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+        {
+            return [];
+        }
+
+        var accountIds = new HashSet<Guid>();
+        var targets = rawTargets.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var target in targets)
+        {
+            var conversation = this.client.StartDirectConversationAsync(this.configuration.AuthToken, new StartDirectConversationRequest(target)).GetAwaiter().GetResult();
+            var detail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
+            var member = detail.Members.FirstOrDefault(item => item.AccountId != this.state.CurrentProfile.AccountId);
+            if (member is not null)
+            {
+                accountIds.Add(member.AccountId);
+            }
+        }
+
+        return accountIds.ToList();
+    }
+
+    private void TickMessageAutoRefresh()
+    {
+        if (!this.IsOpen || string.IsNullOrWhiteSpace(this.configuration.AuthToken) || this.showHomeScreen || this.activeTab != PhoneTab.Messages)
+        {
+            return;
+        }
+
+        if (this.pendingAuthTask is { IsCompleted: false } || this.pendingSnapshotTask is { IsCompleted: false } || this.pendingConversationMessagesTask is { IsCompleted: false })
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (this.selectedConversationId is { } conversationId)
+        {
+            if (now - this.lastConversationRefreshUtc < TimeSpan.FromSeconds(2))
+            {
+                return;
+            }
+
+            this.lastConversationRefreshUtc = now;
+            this.pendingConversationMessagesTask = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversationId);
+            return;
+        }
+
+        if (now - this.lastConversationListRefreshUtc < TimeSpan.FromSeconds(4))
+        {
+            return;
+        }
+
+        this.lastConversationListRefreshUtc = now;
+        this.RefreshSnapshot();
     }
 
     private void ProcessBackgroundTasks()
@@ -1923,6 +2108,7 @@ public sealed class PhoneWindow : Window
                 this.configuration.AuthToken = result.AuthToken;
                 this.configuration.StoreRememberedCredentials(this.loginUsername, this.loginPassword);
                 this.pendingStatus = result.StatusMessage ?? "Signed in";
+                this.ClearDebugAnnouncement();
                 this.SaveConfiguration();
                 this.showHomeScreen = true;
                 this.autoLoginAttempted = false;
@@ -1931,6 +2117,29 @@ public sealed class PhoneWindow : Window
             }
         }
 
+        if (this.pendingConversationMessagesTask is { IsCompleted: true })
+        {
+            try
+            {
+                var page = this.pendingConversationMessagesTask.GetAwaiter().GetResult();
+                this.pendingConversationMessagesTask = null;
+                if (this.selectedConversationId == page.ConversationId)
+                {
+                    var previousCount = this.selectedConversationMessages?.Messages.Count ?? 0;
+                    this.selectedConversationMessages = page;
+                    if (page.Messages.Count != previousCount)
+                    {
+                        this.scrollMessagesToBottom = true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                this.pendingConversationMessagesTask = null;
+                this.pendingStatus = string.IsNullOrWhiteSpace(ex.Message) ? "Message refresh failed" : ex.Message;
+                this.AnnounceDebugOnce($"Message refresh failed: {this.pendingStatus}", ex);
+            }
+        }
         if (this.pendingSnapshotTask is { IsCompleted: true })
         {
             var result = this.pendingSnapshotTask.GetAwaiter().GetResult();
@@ -1948,8 +2157,9 @@ public sealed class PhoneWindow : Window
                 }
 
                 this.refreshOnNextDraw = false;
-                this.pendingStatus = "Sync failed";
-                this.service.Log.Warning(result.Error, "Failed to refresh TomestonePhone snapshot.");
+                this.pendingStatus = string.IsNullOrWhiteSpace(result.Error.Message) ? "Sync failed" : result.Error.Message;
+                this.AnnounceDebugOnce($"Sync failed: {this.pendingStatus}", result.Error);
+                this.SignOutToGuestState(this.pendingStatus, false, false, false);
             }
             else if (result.Snapshot is not null)
             {
@@ -1972,6 +2182,7 @@ public sealed class PhoneWindow : Window
                 else
                 {
                     this.refreshOnNextDraw = false;
+                    this.ClearDebugAnnouncement();
                     this.pendingStatus = $"Synced {DateTime.Now:t}";
                 }
             }
@@ -2019,12 +2230,18 @@ public sealed class PhoneWindow : Window
             || message.Contains("forbidden", StringComparison.OrdinalIgnoreCase);
     }
 
-    private void SignOutToGuestState(string statusMessage)
+    private void SignOutToGuestState(string statusMessage, bool clearRememberedCredentials = true, bool clearStoredUsername = true, bool resetAutoLoginAttempted = true)
     {
         var seeded = PhoneState.CreateSeeded();
         this.configuration.AuthToken = null;
-        this.configuration.Username = null;
-        this.configuration.ClearRememberedCredentials();
+        if (clearStoredUsername)
+        {
+            this.configuration.Username = null;
+        }
+        if (clearRememberedCredentials)
+        {
+            this.configuration.ClearRememberedCredentials();
+        }
         this.state.CurrentProfile = seeded.CurrentProfile;
         this.state.Contacts = seeded.Contacts;
         this.state.BlockedContacts = seeded.BlockedContacts;
@@ -2046,17 +2263,20 @@ public sealed class PhoneWindow : Window
         this.pendingSnapshotTask = null;
         this.refreshOnNextDraw = false;
         this.pendingStatus = statusMessage;
-        this.autoLoginAttempted = false;
+        this.autoLoginAttempted = resetAutoLoginAttempted ? false : this.autoLoginAttempted;
+        if (!clearStoredUsername && !string.IsNullOrWhiteSpace(this.configuration.Username))
+        {
+            this.loginUsername = this.configuration.Username;
+        }
         this.SaveConfiguration();
     }
 
-    private async Task<PostAuthSnapshotResult> LoadPostAuthSnapshotAsync(string authToken)
+    private async Task<PostAuthSnapshotResult> LoadPostAuthSnapshotAsync(string authToken, GameIdentityRecord? identity)
     {
         try
         {
             var snapshot = await this.client.GetSnapshotAsync(authToken).ConfigureAwait(false);
             PhoneProfile? profile = null;
-            var identity = this.GetCurrentGameIdentity();
             if (identity is not null)
             {
                 try
@@ -2080,6 +2300,31 @@ public sealed class PhoneWindow : Window
     private sealed record AuthResult(string? Username, string? AuthToken, string? StatusMessage, Exception? Error);
 
     private sealed record PostAuthSnapshotResult(PhoneSnapshot? Snapshot, PhoneProfile? UpdatedProfile, Exception? Error);}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
