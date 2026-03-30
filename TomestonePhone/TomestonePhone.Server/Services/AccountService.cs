@@ -180,9 +180,10 @@ public sealed class AccountService : IAccountService
 
     public Task<AdminDashboardSnapshot> GetAdminDashboardAsync(Guid accountId, CancellationToken cancellationToken = default)
     {
-        return this.repository.ReadAsync(state =>
+        return this.repository.WriteAsync(state =>
         {
             var actor = state.Accounts.Single(item => item.Id == accountId);
+            SystemConversationCoordinator.EnsureStaffConversation(state);
             if (actor.Role != nameof(AccountRole.Owner) && actor.Role != nameof(AccountRole.Admin) && actor.Role != nameof(AccountRole.Moderator))
             {
                 throw new InvalidOperationException("Not authorized.");
@@ -315,3 +316,4 @@ public sealed class AccountService : IAccountService
                 : new UserAvatarLayout(account.Avatar.RelativePath, account.Avatar.Zoom, account.Avatar.OffsetX, account.Avatar.OffsetY, account.Avatar.ViewportSize, account.Avatar.UpdatedAtUtc));
     }
 }
+

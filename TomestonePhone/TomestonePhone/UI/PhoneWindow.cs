@@ -1253,14 +1253,25 @@ public sealed class PhoneWindow : Window
             return;
         }
 
-        this.selectedConversationId = conversationId;
-        this.selectedConversationMessages = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversationId).GetAwaiter().GetResult();
-        this.selectedConversationDetail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversationId).GetAwaiter().GetResult();
-        this.renderedMessageCount = 0;
-        this.scrollMessagesToBottom = true;
-        this.showHomeScreen = false;
-        this.activeTab = tab;
-        this.DismissNotificationsFor(conversationId);
+        try
+        {
+            this.selectedConversationId = conversationId;
+            this.selectedConversationMessages = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversationId).GetAwaiter().GetResult();
+            this.selectedConversationDetail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversationId).GetAwaiter().GetResult();
+            this.renderedMessageCount = 0;
+            this.scrollMessagesToBottom = true;
+            this.showHomeScreen = false;
+            this.activeTab = tab;
+            this.DismissNotificationsFor(conversationId);
+        }
+        catch (Exception ex)
+        {
+            this.selectedConversationId = null;
+            this.selectedConversationMessages = null;
+            this.selectedConversationDetail = null;
+            this.pendingStatus = string.IsNullOrWhiteSpace(ex.Message) ? "Could not open conversation" : ex.Message;
+            this.AnnounceDebugOnce($"Conversation open failed: {this.pendingStatus}", ex);
+        }
     }
 
     private bool IsCurrentUserStaff()
@@ -2776,6 +2787,7 @@ public sealed class PhoneWindow : Window
     private sealed record AuthResult(string? Username, string? AuthToken, string? StatusMessage, Exception? Error);
 
     private sealed record PostAuthSnapshotResult(PhoneSnapshot? Snapshot, PhoneProfile? UpdatedProfile, Exception? Error);}
+
 
 
 
