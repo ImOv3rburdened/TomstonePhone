@@ -4,4 +4,5 @@ public sealed record AdminDashboardSnapshot(
     IReadOnlyList<AdminAccountSummary> Accounts,
     IReadOnlyList<ReportRecord> Reports,
     IReadOnlyList<AuditLogRecord> AuditLogs,
-    IReadOnlyList<SupportTicketRecord> Tickets);
+    IReadOnlyList<SupportTicketRecord> Tickets,
+    ServerAnnouncementRecord? ActiveAnnouncement);

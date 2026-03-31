@@ -5,10 +5,41 @@ namespace TomestonePhone.Server.Services;
 
 public static class AppStateMigrator
 {
+    public const int LatestSchemaVersion = 3;
+
     public static bool Migrate(PersistedAppState state)
     {
-        var changed = false;
+        ArgumentNullException.ThrowIfNull(state);
 
+        var changed = false;
+        var currentVersion = Math.Max(0, state.SchemaVersion);
+        if (state.SchemaVersion != currentVersion)
+        {
+            state.SchemaVersion = currentVersion;
+            changed = true;
+        }
+
+        while (state.SchemaVersion < LatestSchemaVersion)
+        {
+            changed |= ApplyNextMigration(state);
+        }
+
+        return changed;
+    }
+
+    private static bool ApplyNextMigration(PersistedAppState state)
+    {
+        return state.SchemaVersion switch
+        {
+            0 => ApplyMigration1(state),
+            1 => ApplyMigration2(state),
+            2 => ApplyMigration3(state),
+            _ => false,
+        };
+    }
+
+    private static bool ApplyMigration1(PersistedAppState state)
+    {
         state.Accounts ??= [];
         state.Conversations ??= [];
         state.Calls ??= [];
@@ -19,24 +50,22 @@ public static class AppStateMigrator
         state.IpBans ??= [];
         state.SupportTickets ??= [];
         state.Sessions ??= [];
+        state.ActiveAnnouncement ??= null;
 
         foreach (var account in state.Accounts)
         {
             account.KnownIpAddresses ??= [];
             account.BlockedAccountIds ??= [];
             account.ContactPreferences ??= [];
-            changed |= string.IsNullOrWhiteSpace(account.Role) || string.IsNullOrWhiteSpace(account.Status);
             account.Role = string.IsNullOrWhiteSpace(account.Role) ? nameof(AccountRole.User) : account.Role;
             account.Status = string.IsNullOrWhiteSpace(account.Status) ? nameof(AccountStatus.Active) : account.Status;
         }
 
         foreach (var conversation in state.Conversations)
         {
-            conversation.Kind = string.IsNullOrWhiteSpace(conversation.Kind)
-                ? (conversation.LinkedSupportTicketId is not null ? SystemConversationCoordinator.SupportConversationKind : SystemConversationCoordinator.StandardConversationKind)
-                : conversation.Kind;
             conversation.Members ??= [];
             conversation.Messages ??= [];
+
             foreach (var member in conversation.Members)
             {
                 member.Role = string.IsNullOrWhiteSpace(member.Role) ? nameof(GroupMemberRole.Member) : member.Role;
@@ -49,10 +78,22 @@ public static class AppStateMigrator
             }
         }
 
-        var knownSupportConversationIds = state.SupportTickets
-            .Where(ticket => ticket.ConversationId != Guid.Empty)
-            .Select(ticket => ticket.ConversationId)
-            .ToHashSet();
+        state.SchemaVersion = 1;
+        return true;
+    }
+
+    private static bool ApplyMigration2(PersistedAppState state)
+    {
+        foreach (var conversation in state.Conversations)
+        {
+            var expectedKind = conversation.LinkedSupportTicketId is not null
+                ? SystemConversationCoordinator.SupportConversationKind
+                : SystemConversationCoordinator.StandardConversationKind;
+
+            conversation.Kind = string.IsNullOrWhiteSpace(conversation.Kind)
+                ? expectedKind
+                : conversation.Kind;
+        }
 
         foreach (var conversation in state.Conversations)
         {
@@ -62,13 +103,11 @@ public static class AppStateMigrator
                 if (linkedTicket is not null)
                 {
                     conversation.LinkedSupportTicketId = linkedTicket.Id;
-                    changed = true;
                 }
             }
             else if (conversation.LinkedSupportTicketId is not null && conversation.Kind != SystemConversationCoordinator.SupportConversationKind)
             {
                 conversation.Kind = SystemConversationCoordinator.SupportConversationKind;
-                changed = true;
             }
         }
 
@@ -77,16 +116,19 @@ public static class AppStateMigrator
             ticket.Subject ??= string.Empty;
             ticket.Body ??= string.Empty;
             ticket.Status = string.IsNullOrWhiteSpace(ticket.Status) ? nameof(SupportTicketStatus.Open) : ticket.Status;
-            var beforeConversationId = ticket.ConversationId;
-            var conversation = EnsureTicketConversation(state, ticket);
-            changed |= beforeConversationId != ticket.ConversationId || conversation.LinkedSupportTicketId != ticket.Id;
+            _ = EnsureTicketConversation(state, ticket);
         }
 
-        var beforeStaffConversationCount = state.Conversations.Count(item => item.Kind == SystemConversationCoordinator.StaffConversationKind && !item.IsDeleted);
-        SystemConversationCoordinator.EnsureStaffConversation(state);
-        changed |= state.Conversations.Count(item => item.Kind == SystemConversationCoordinator.StaffConversationKind && !item.IsDeleted) != beforeStaffConversationCount;
+        state.SchemaVersion = 2;
+        return true;
+    }
 
-        return changed;
+    private static bool ApplyMigration3(PersistedAppState state)
+    {
+        SystemConversationCoordinator.EnsureStaffConversation(state);
+        state.ActiveAnnouncement ??= null;
+        state.SchemaVersion = 3;
+        return true;
     }
 
     private static PersistedConversation EnsureTicketConversation(PersistedAppState state, PersistedSupportTicket ticket)
@@ -151,4 +193,3 @@ public static class AppStateMigrator
         return conversation;
     }
 }
-

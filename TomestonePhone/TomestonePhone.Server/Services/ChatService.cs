@@ -245,6 +245,21 @@ public sealed class ChatService : IChatService
         }, cancellationToken);
     }
 
+
+    public Task<bool> CanSendMessageInConversationAsync(Guid accountId, Guid conversationId, CancellationToken cancellationToken = default)
+    {
+        return this.repository.ReadAsync(state =>
+        {
+            SystemConversationCoordinator.EnsureStaffConversation(state);
+            var conversation = state.Conversations.SingleOrDefault(item => item.Id == conversationId && !item.IsDeleted && item.Members.Any(member => member.AccountId == accountId));
+            if (conversation is null || conversation.IsReadOnly)
+            {
+                return false;
+            }
+
+            return conversation.Kind is SystemConversationCoordinator.SupportConversationKind or SystemConversationCoordinator.StaffConversationKind;
+        }, cancellationToken);
+    }
     private static PersistedConversation GetVisibleConversation(PersistedAppState state, Guid accountId, Guid conversationId)
     {
         return state.Conversations.Single(item => item.Id == conversationId && !item.IsDeleted && item.Members.Any(member => member.AccountId == accountId));
@@ -263,7 +278,7 @@ public sealed class ChatService : IChatService
                 .Select(member =>
                 {
                     var account = state.Accounts.Single(item => item.Id == member.AccountId);
-                    return new ConversationMemberRecord(member.AccountId, account.DisplayName, ParseRole(member.Role), member.JoinedAtUtc);
+                    return new ConversationMemberRecord(member.AccountId, account.DisplayName, account.PhoneNumber, ParseRole(member.Role), member.JoinedAtUtc);
                 })
                 .ToList(),
             conversation.Messages

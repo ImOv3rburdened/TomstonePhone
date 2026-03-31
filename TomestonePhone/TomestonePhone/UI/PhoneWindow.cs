@@ -1,5 +1,6 @@
 using System.Numerics;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 using Dalamud.Bindings.ImGui;
@@ -10,6 +11,12 @@ namespace TomestonePhone.UI;
 
 public sealed class PhoneWindow : Window
 {
+    private enum MessageFolder
+    {
+        Regular,
+        Tickets,
+        Staff,
+    }
     private const float PhoneAspectRatio = 390f / 844f;
     private const float DefaultWindowWidth = 440f;
     private const float DefaultWindowHeight = 952f;
@@ -47,6 +54,7 @@ public sealed class PhoneWindow : Window
     private string groupAddTarget = string.Empty;
     private string groupCreateName = string.Empty;
     private string groupCreateTargets = string.Empty;
+    private Guid? selectedMemberCardAccountId;
     private string contactAddTarget = string.Empty;
     private string callTarget = string.Empty;
     private string friendRequestTarget = string.Empty;
@@ -67,12 +75,14 @@ public sealed class PhoneWindow : Window
     private bool refreshOnNextDraw = true;
     private bool autoLoginAttempted;
     private string? lastChatDebugMessage;
+    private MessageFolder activeMessageFolder = MessageFolder.Regular;
 
     private Task<ClientVersionPolicyResult>? pendingVersionPolicyTask;
     private bool clientVersionChecked;
     private bool clientUpdateRequired;
     private string minimumClientVersion = string.Empty;
     private string clientUpdateMessage = string.Empty;
+    private bool clientUpdateNoticeShown;
     public PhoneWindow(Service service, Configuration configuration, PhoneState state, TomestonePhoneClient client)
         : base("TomestonePhone###TomestonePhoneMain")
     {
@@ -132,7 +142,55 @@ public sealed class PhoneWindow : Window
         return new Vector2(this.Scale(x), this.Scale(y));
     }
 
-    public override void Draw()
+    private bool IsStaffConversation(ConversationSummary conversation)
+    {
+        return conversation.IsGroup && string.Equals(conversation.DisplayName, "Staff Room", StringComparison.OrdinalIgnoreCase);
+    }
+    private bool IsTicketConversation(ConversationSummary conversation)
+    {
+        return this.state.SupportTickets.Any(ticket => ticket.ConversationId == conversation.Id);
+    }
+
+    private IReadOnlyList<ConversationSummary> GetVisibleMessageFolderConversations()
+    {
+        return this.activeMessageFolder switch
+        {
+            MessageFolder.Tickets => this.state.Conversations
+                .Where(this.IsTicketConversation)
+                .OrderByDescending(item => item.LastActivityUtc)
+                .ToList(),
+            MessageFolder.Staff => this.state.Conversations
+                .Where(this.IsStaffConversation)
+                .OrderByDescending(item => item.LastActivityUtc)
+                .ToList(),
+            _ => this.state.Conversations
+                .Where(item => !this.IsTicketConversation(item) && !this.IsStaffConversation(item))
+                .OrderByDescending(item => item.LastActivityUtc)
+                .ToList(),
+        };
+    }
+
+    private void SyncMessageFolderForConversation(Guid conversationId)
+    {
+        var conversation = this.state.Conversations.FirstOrDefault(item => item.Id == conversationId);
+        if (conversation is null)
+        {
+            return;
+        }
+
+        if (this.IsStaffConversation(conversation))
+        {
+            this.activeMessageFolder = MessageFolder.Staff;
+        }
+        else if (this.IsTicketConversation(conversation))
+        {
+            this.activeMessageFolder = MessageFolder.Tickets;
+        }
+        else
+        {
+            this.activeMessageFolder = MessageFolder.Regular;
+        }
+    }    public override void Draw()
     {
         this.ProcessBackgroundTasks();
         this.EnsureClientVersionPolicy();
@@ -500,7 +558,7 @@ public sealed class PhoneWindow : Window
     {
         if (this.selectedConversationId is { } selectedId && this.selectedConversationMessages is not null)
         {
-            var detailHeight = this.selectedConversationDetail is null ? 0f : this.Scale(132f);
+            var detailHeight = this.selectedConversationDetail is null ? 0f : this.Scale(this.selectedConversationDetail.IsGroup || this.selectedConversationDetail.LinkedSupportTicketId is not null ? 112f : 86f);
             var composerHeight = this.Scale(92f);
             var threadHeight = Math.Max(this.Scale(180f), ImGui.GetContentRegionAvail().Y - detailHeight - composerHeight - this.Scale(8f));
 
@@ -519,7 +577,57 @@ public sealed class PhoneWindow : Window
                     }
 
                     ImGui.TextDisabled(this.selectedConversationDetail.Name);
-                    ImGui.TextWrapped(string.Join(", ", this.selectedConversationDetail.Members.Select(item => $"{item.DisplayName} [{item.Role}]")));
+                    if (this.selectedConversationDetail.IsGroup)
+                    {
+                        ImGui.TextDisabled("Members");
+                        var memberPopupInteracted = false;
+                        foreach (var member in this.selectedConversationDetail.Members)
+                        {
+                            var memberLabel = $"{member.DisplayName} [{member.Role}]";
+                            var memberButtonWidth = Math.Min(ImGui.GetContentRegionAvail().X, Math.Max(this.Scale(96f), ImGui.CalcTextSize(memberLabel).X + this.Scale(24f)));
+                            if (ImGui.Button($"{memberLabel}##member-{member.AccountId}", new Vector2(memberButtonWidth, this.Scale(26f))))
+                            {
+                                this.selectedMemberCardAccountId = member.AccountId;
+                                ImGui.OpenPopup($"member-card-{member.AccountId}");
+                                memberPopupInteracted = true;
+                            }
+                            if (ImGui.IsItemHovered())
+                            {
+                                memberPopupInteracted = true;
+                            }
+                            if (ImGui.BeginPopup($"member-card-{member.AccountId}"))
+                            {
+                                memberPopupInteracted = true;
+                                ImGui.TextUnformatted(member.DisplayName);
+                                ImGui.TextDisabled(member.PhoneNumber);
+                                if (member.AccountId != this.state.CurrentProfile.AccountId && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+                                {
+                                    if (ImGui.Button($"Add Contact##member-add-{member.AccountId}", new Vector2(this.Scale(132f), this.Scale(28f))))
+                                    {
+                                        var contact = this.client.AddContactAsync(this.configuration.AuthToken, member.AccountId, member.DisplayName, member.PhoneNumber).GetAwaiter().GetResult();
+                                        this.state.Contacts.RemoveAll(item => item.Id == contact.Id);
+                                        this.state.Contacts.Add(contact);
+                                        this.pendingStatus = "Contact saved";
+                                        this.selectedMemberCardAccountId = null;
+                                        ImGui.CloseCurrentPopup();
+                                    }
+                                }
+                                ImGui.EndPopup();
+                            }
+                            if (ImGui.GetContentRegionAvail().X > this.Scale(120f))
+                            {
+                                ImGui.SameLine();
+                            }
+                        }
+                        if (ImGui.IsMouseClicked(ImGuiMouseButton.Left) && !memberPopupInteracted)
+                        {
+                            this.selectedMemberCardAccountId = null;
+                        }
+                    }
+                    else
+                    {
+                        ImGui.TextWrapped(string.Join(", ", this.selectedConversationDetail.Members.Select(item => $"{item.DisplayName} [{item.Role}]")));
+                    }
 
                     var linkedTicketId = this.selectedConversationDetail.LinkedSupportTicketId;
                     var isSupportConversation = linkedTicketId is not null;
@@ -718,10 +826,33 @@ public sealed class PhoneWindow : Window
             return;
         }
 
-        using (var compose = ImRaii.Child("messages-compose-card", new Vector2(-1f, this.Scale(144f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+        using (var compose = ImRaii.Child("messages-compose-card", new Vector2(-1f, this.Scale(196f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
         {
             if (compose.Success)
             {
+                var ticketUnread = this.state.SupportTickets.Sum(ticket => this.state.Conversations.FirstOrDefault(item => item.Id == ticket.ConversationId)?.UnreadCount ?? 0);
+                var staffUnread = this.state.Conversations.Where(this.IsStaffConversation).Sum(item => item.UnreadCount);
+                var regularUnread = this.state.Conversations.Where(item => !this.IsTicketConversation(item) && !this.IsStaffConversation(item)).Sum(item => item.UnreadCount);
+                var tabWidth = this.IsCurrentUserStaff()
+                    ? (ImGui.GetContentRegionAvail().X - this.Scale(20f)) / 3f
+                    : (ImGui.GetContentRegionAvail().X - this.Scale(10f)) / 2f;
+                if (ImGui.Button(regularUnread > 0 ? $"Regular [{regularUnread}]" : "Regular", new Vector2(tabWidth, this.Scale(30f))))
+                {
+                    this.activeMessageFolder = MessageFolder.Regular;
+                }
+                ImGui.SameLine();
+                if (ImGui.Button(ticketUnread > 0 ? $"Tickets [{ticketUnread}]" : "Tickets", new Vector2(tabWidth, this.Scale(30f))))
+                {
+                    this.activeMessageFolder = MessageFolder.Tickets;
+                }
+                if (this.IsCurrentUserStaff())
+                {
+                    ImGui.SameLine();
+                    if (ImGui.Button(staffUnread > 0 ? $"Staff [{staffUnread}]" : "Staff", new Vector2(tabWidth, this.Scale(30f))))
+                    {
+                        this.activeMessageFolder = MessageFolder.Staff;
+                    }
+                }
                 var buttonWidth = this.Scale(112f);
                 var inputWidth = Math.Max(this.Scale(140f), ImGui.GetContentRegionAvail().X - buttonWidth - this.Scale(10f));
                 ImGui.SetNextItemWidth(inputWidth);
@@ -737,6 +868,7 @@ public sealed class PhoneWindow : Window
                         this.selectedConversationId = conversation.Id;
                         this.selectedConversationMessages = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
                         this.selectedConversationDetail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
+                        this.SyncMessageFolderForConversation(conversation.Id);
                         this.renderedMessageCount = 0;
                         this.scrollMessagesToBottom = true;
                         this.pendingStatus = "Conversation ready";
@@ -746,42 +878,44 @@ public sealed class PhoneWindow : Window
                         this.pendingStatus = ex.Message;
                     }
                 }
-
-                var groupButtonWidth = this.Scale(112f);
-                var groupNameWidth = Math.Max(this.Scale(120f), ImGui.GetContentRegionAvail().X - groupButtonWidth - this.Scale(10f));
-                ImGui.SetNextItemWidth(groupNameWidth);
-                ImGui.InputTextWithHint("##group-name", "Group name", ref this.groupCreateName, 64);
-                ImGui.SameLine();
-                if (ImGui.Button("New Group", new Vector2(groupButtonWidth, this.Scale(32f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken) && !string.IsNullOrWhiteSpace(this.groupCreateName) && !string.IsNullOrWhiteSpace(this.groupCreateTargets))
+                if (this.activeMessageFolder == MessageFolder.Regular)
                 {
-                    try
+                    var groupButtonWidth = this.Scale(112f);
+                    var groupNameWidth = Math.Max(this.Scale(120f), ImGui.GetContentRegionAvail().X - groupButtonWidth - this.Scale(10f));
+                    ImGui.SetNextItemWidth(groupNameWidth);
+                    ImGui.InputTextWithHint("##group-name", "Group name", ref this.groupCreateName, 64);
+                    ImGui.SameLine();
+                    if (ImGui.Button("New Group", new Vector2(groupButtonWidth, this.Scale(32f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken) && !string.IsNullOrWhiteSpace(this.groupCreateName) && !string.IsNullOrWhiteSpace(this.groupCreateTargets))
                     {
-                        var participantIds = this.ResolveConversationTargets(this.groupCreateTargets).ToList();
-                        if (participantIds.Count == 0)
+                        try
                         {
-                            this.pendingStatus = "Add at least one valid member";
+                            var participantIds = this.ResolveConversationTargets(this.groupCreateTargets).ToList();
+                            if (participantIds.Count == 0)
+                            {
+                                this.pendingStatus = "Add at least one valid member";
+                            }
+                            else
+                            {
+                                var conversation = this.client.CreateConversationAsync(this.configuration.AuthToken, new CreateConversationRequest(this.groupCreateName.Trim(), true, participantIds)).GetAwaiter().GetResult();
+                                this.groupCreateName = string.Empty;
+                                this.groupCreateTargets = string.Empty;
+                                this.RefreshSnapshot();
+                                this.selectedConversationId = conversation.Id;
+                                this.selectedConversationMessages = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
+                                this.selectedConversationDetail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
+                                this.SyncMessageFolderForConversation(conversation.Id);
+                                this.renderedMessageCount = 0;
+                                this.scrollMessagesToBottom = true;
+                                this.pendingStatus = "Group ready";
+                            }
                         }
-                        else
+                        catch (Exception ex)
                         {
-                            var conversation = this.client.CreateConversationAsync(this.configuration.AuthToken, new CreateConversationRequest(this.groupCreateName.Trim(), true, participantIds)).GetAwaiter().GetResult();
-                            this.groupCreateName = string.Empty;
-                            this.groupCreateTargets = string.Empty;
-                            this.RefreshSnapshot();
-                            this.selectedConversationId = conversation.Id;
-                            this.selectedConversationMessages = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
-                            this.selectedConversationDetail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
-                            this.renderedMessageCount = 0;
-                            this.scrollMessagesToBottom = true;
-                            this.pendingStatus = "Group ready";
+                            this.pendingStatus = ex.Message;
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        this.pendingStatus = ex.Message;
-                    }
+                    ImGui.InputTextWithHint("##group-members", "Members, comma separated", ref this.groupCreateTargets, 256);
                 }
-
-                ImGui.InputTextWithHint("##group-members", "Members, comma separated", ref this.groupCreateTargets, 256);
             }
         }
         var listHeight = Math.Max(this.Scale(180f), ImGui.GetContentRegionAvail().Y);
@@ -791,14 +925,36 @@ public sealed class PhoneWindow : Window
             {
                 return;
             }
-            ImGui.TextDisabled("Recent Conversations");
-            if (this.state.Conversations.Count == 0)
+            ImGui.TextDisabled(this.activeMessageFolder switch
             {
-                ImGui.TextDisabled("No conversations yet");
-                ImGui.TextWrapped("Start a chat with any username or phone number above.");
+                MessageFolder.Tickets => "Ticket Chats",
+                MessageFolder.Staff => "Staff Chat",
+                _ => "Recent Conversations",
+            });
+            var visibleConversations = this.GetVisibleMessageFolderConversations();
+            if (visibleConversations.Count == 0)
+            {
+                ImGui.TextDisabled(this.activeMessageFolder switch
+                {
+                    MessageFolder.Tickets => "No ticket chats yet",
+                    MessageFolder.Staff => "No staff chat yet",
+                    _ => "No conversations yet",
+                });
+                if (this.activeMessageFolder == MessageFolder.Regular)
+                {
+                    ImGui.TextWrapped("Start a chat with any username or phone number above.");
+                }
+                else if (this.activeMessageFolder == MessageFolder.Tickets)
+                {
+                    ImGui.TextWrapped("Support tickets stay here so they do not clutter regular chats.");
+                }
+                else
+                {
+                    ImGui.TextWrapped("The staff room stays here so staff chatter stays separate.");
+                }
                 return;
             }
-            foreach (var conversation in this.state.Conversations.OrderByDescending(item => item.LastActivityUtc))
+            foreach (var conversation in visibleConversations)
             {
                 ImGui.TextUnformatted(conversation.DisplayName);
                 if (conversation.UnreadCount > 0)
@@ -813,6 +969,7 @@ public sealed class PhoneWindow : Window
                     this.selectedConversationId = conversation.Id;
                     this.selectedConversationMessages = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
                     this.selectedConversationDetail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
+                    this.SyncMessageFolderForConversation(conversation.Id);
                     this.renderedMessageCount = 0;
                     this.scrollMessagesToBottom = true;
                     this.DismissNotificationsFor(conversation.Id);
@@ -821,8 +978,6 @@ public sealed class PhoneWindow : Window
             }
         }
     }
-
-
     private void DrawCalls()
     {
         using (var compose = ImRaii.Child("calls-compose-card", new Vector2(-1f, this.Scale(96f)), false))
@@ -1258,6 +1413,7 @@ public sealed class PhoneWindow : Window
             this.selectedConversationId = conversationId;
             this.selectedConversationMessages = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversationId).GetAwaiter().GetResult();
             this.selectedConversationDetail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversationId).GetAwaiter().GetResult();
+            this.SyncMessageFolderForConversation(conversationId);
             this.renderedMessageCount = 0;
             this.scrollMessagesToBottom = true;
             this.showHomeScreen = false;
@@ -1292,7 +1448,7 @@ public sealed class PhoneWindow : Window
         if (this.adminDashboard is not null)
         {
             var tickets = this.adminDashboard.Tickets.Where(item => item.Id != ticket.Id).Prepend(ticket).ToList();
-            this.adminDashboard = new AdminDashboardSnapshot(this.adminDashboard.Accounts, this.adminDashboard.Reports, this.adminDashboard.AuditLogs, tickets);
+            this.adminDashboard = new AdminDashboardSnapshot(this.adminDashboard.Accounts, this.adminDashboard.Reports, this.adminDashboard.AuditLogs, tickets, this.adminDashboard.ActiveAnnouncement);
         }
     }
 
@@ -1311,6 +1467,7 @@ public sealed class PhoneWindow : Window
             return;
         }
 
+        this.activeMessageFolder = MessageFolder.Staff;
         this.OpenConversation(staffConversation.Id);
     }
     private void SendComposedMessage(Guid conversationId)
@@ -1396,9 +1553,26 @@ public sealed class PhoneWindow : Window
         }
     }
 
+    private string SanitizeUserFacingError(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return "TomestonePhone error.";
+        }
+
+        var sanitized = message.Trim();
+        if (!string.IsNullOrWhiteSpace(this.configuration.ServerBaseUrl))
+        {
+            sanitized = sanitized.Replace(this.configuration.ServerBaseUrl, "the server", StringComparison.OrdinalIgnoreCase);
+        }
+
+        sanitized = Regex.Replace(sanitized, @"https?://[^\s\)]+", "the server", RegexOptions.IgnoreCase);
+        sanitized = Regex.Replace(sanitized, @"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b", "the server", RegexOptions.IgnoreCase);
+        return sanitized;
+    }
     private void AnnounceDebugOnce(string message, Exception? ex = null)
     {
-        var trimmed = string.IsNullOrWhiteSpace(message) ? "TomestonePhone error." : message.Trim();
+        var trimmed = this.SanitizeUserFacingError(message);
         if (string.Equals(this.lastChatDebugMessage, trimmed, StringComparison.Ordinal))
         {
             return;
@@ -1417,6 +1591,25 @@ public sealed class PhoneWindow : Window
         this.lastChatDebugMessage = null;
     }
 
+    private void HandleServerAnnouncement(ServerAnnouncementRecord? announcement)
+    {
+        if (announcement is null)
+        {
+            return;
+        }
+
+        this.configuration.SeenAnnouncementIds ??= [];
+        if (this.configuration.SeenAnnouncementIds.Contains(announcement.Id))
+        {
+            return;
+        }
+
+        var title = string.IsNullOrWhiteSpace(announcement.Title) ? "Server Notice" : announcement.Title.Trim();
+        var body = string.IsNullOrWhiteSpace(announcement.Body) ? "A server update notice was posted." : announcement.Body.Trim();
+        this.service.ChatGui.Print($"[TomestonePhone Notice] {title}: {body}");
+        this.configuration.SeenAnnouncementIds.Add(announcement.Id);
+        this.SaveConfiguration();
+    }
     private string GetUsernameForUi()
     {
         if (!string.IsNullOrWhiteSpace(this.state.CurrentProfile.Username) && !string.Equals(this.state.CurrentProfile.Username, "Guest", StringComparison.OrdinalIgnoreCase))
@@ -1467,6 +1660,12 @@ public sealed class PhoneWindow : Window
 
     private void HandleAuthFailure(Exception ex)
     {
+        if (ex is ClientUpgradeRequiredException upgradeRequired)
+        {
+            this.ApplyClientUpgradeRequired(upgradeRequired.MinimumVersion, upgradeRequired.UpdateMessage);
+            return;
+        }
+
         var message = ex.ToString();
         if (message.Contains("Invalid username or password", StringComparison.OrdinalIgnoreCase) && this.autoLoginAttempted)
         {
@@ -1486,10 +1685,35 @@ public sealed class PhoneWindow : Window
             return;
         }
 
-        this.pendingStatus = string.IsNullOrWhiteSpace(ex.Message) ? "Authentication failed" : ex.Message;
+        this.pendingStatus = this.SanitizeUserFacingError(string.IsNullOrWhiteSpace(ex.Message) ? "Authentication failed" : ex.Message);
         this.AnnounceDebugOnce($"Auth failure: {this.pendingStatus}", ex);
     }
+    private void ApplyClientUpgradeRequired(string minimumVersion, string updateMessage)
+    {
+        this.clientVersionChecked = true;
+        this.clientUpdateRequired = true;
+        this.minimumClientVersion = minimumVersion ?? string.Empty;
+        this.clientUpdateMessage = string.IsNullOrWhiteSpace(updateMessage)
+            ? "Please update TomestonePhone to the latest version before using the app."
+            : updateMessage;
+        this.pendingStatus = "Update required";
+        this.SignOutToGuestState(this.pendingStatus, false, false, false);
+        this.AnnounceClientUpdateRequiredOnce();
+    }
 
+    private void AnnounceClientUpdateRequiredOnce()
+    {
+        if (this.clientUpdateNoticeShown)
+        {
+            return;
+        }
+
+        this.clientUpdateNoticeShown = true;
+        var message = string.IsNullOrWhiteSpace(this.clientUpdateMessage)
+            ? "Please update TomestonePhone to the latest version before using the app."
+            : this.clientUpdateMessage;
+        this.service.ChatGui.Print($"[TomestonePhone] {message}");
+    }
     private void DrawHomeButton()
     {
         var available = ImGui.GetContentRegionAvail();
@@ -1972,7 +2196,7 @@ public sealed class PhoneWindow : Window
             }
         }
 
-        using (var accountSection = ImRaii.Child("staff-account-section", new Vector2(-1f, this.Scale(250f)), true))
+        using (var accountSection = ImRaii.Child("staff-account-section", new Vector2(-1f, this.Scale(320f)), true))
         {
             if (accountSection.Success)
             {
@@ -1994,7 +2218,7 @@ public sealed class PhoneWindow : Window
 
                 foreach (var account in accounts)
                 {
-                    using var item = ImRaii.Child($"staff-account-{account.AccountId}", new Vector2(-1f, this.Scale(104f)), false);
+                    using var item = ImRaii.Child($"staff-account-{account.AccountId}", new Vector2(-1f, this.Scale(138f)), false);
                     if (!item.Success)
                     {
                         continue;
@@ -2568,8 +2792,15 @@ public sealed class PhoneWindow : Window
                 this.clientUpdateRequired = !string.IsNullOrWhiteSpace(this.minimumClientVersion) && this.IsClientVersionOutdated(this.minimumClientVersion);
                 if (this.clientUpdateRequired)
                 {
-                    this.pendingStatus = "Update required";
-                    this.SignOutToGuestState(this.pendingStatus, false, false, false);
+                    this.ApplyClientUpgradeRequired(this.minimumClientVersion, this.clientUpdateMessage);
+                }
+                else
+                {
+                    this.clientUpdateNoticeShown = false;
+                    if (string.Equals(this.pendingStatus, "Update required", StringComparison.OrdinalIgnoreCase))
+                    {
+                        this.pendingStatus = "Connected";
+                    }
                 }
             }
             catch (Exception ex)
@@ -2577,7 +2808,7 @@ public sealed class PhoneWindow : Window
                 this.pendingVersionPolicyTask = null;
                 this.clientVersionChecked = true;
                 this.clientUpdateRequired = false;
-                this.pendingStatus = string.IsNullOrWhiteSpace(ex.Message) ? this.pendingStatus : ex.Message;
+                this.pendingStatus = this.SanitizeUserFacingError(string.IsNullOrWhiteSpace(ex.Message) ? this.pendingStatus : ex.Message);
             }
         }
 
@@ -2623,16 +2854,23 @@ public sealed class PhoneWindow : Window
             catch (Exception ex)
             {
                 this.pendingConversationMessagesTask = null;
-                this.pendingStatus = string.IsNullOrWhiteSpace(ex.Message) ? "Message refresh failed" : ex.Message;
+                this.pendingStatus = this.SanitizeUserFacingError(string.IsNullOrWhiteSpace(ex.Message) ? "Message refresh failed" : ex.Message);
                 this.AnnounceDebugOnce($"Message refresh failed: {this.pendingStatus}", ex);
             }
         }
+
         if (this.pendingSnapshotTask is { IsCompleted: true })
         {
             var result = this.pendingSnapshotTask.GetAwaiter().GetResult();
             this.pendingSnapshotTask = null;
             if (result.Error is not null)
             {
+                if (result.Error is ClientUpgradeRequiredException upgradeRequired)
+                {
+                    this.ApplyClientUpgradeRequired(upgradeRequired.MinimumVersion, upgradeRequired.UpdateMessage);
+                    return;
+                }
+
                 if (this.IsUnauthorizedError(result.Error))
                 {
                     this.configuration.AuthToken = null;
@@ -2644,13 +2882,14 @@ public sealed class PhoneWindow : Window
                 }
 
                 this.refreshOnNextDraw = false;
-                this.pendingStatus = string.IsNullOrWhiteSpace(result.Error.Message) ? "Sync failed" : result.Error.Message;
+                this.pendingStatus = this.SanitizeUserFacingError(string.IsNullOrWhiteSpace(result.Error.Message) ? "Sync failed" : result.Error.Message);
                 this.AnnounceDebugOnce($"Sync failed: {this.pendingStatus}", result.Error);
                 this.SignOutToGuestState(this.pendingStatus, false, false, false);
             }
             else if (result.Snapshot is not null)
             {
                 this.state.ApplySnapshot(result.Snapshot);
+                this.HandleServerAnnouncement(this.state.ActiveAnnouncement);
                 if (result.UpdatedProfile is not null)
                 {
                     this.state.CurrentProfile = result.UpdatedProfile;
@@ -2786,7 +3025,23 @@ public sealed class PhoneWindow : Window
 
     private sealed record AuthResult(string? Username, string? AuthToken, string? StatusMessage, Exception? Error);
 
-    private sealed record PostAuthSnapshotResult(PhoneSnapshot? Snapshot, PhoneProfile? UpdatedProfile, Exception? Error);}
+    private sealed record PostAuthSnapshotResult(PhoneSnapshot? Snapshot, PhoneProfile? UpdatedProfile, Exception? Error);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

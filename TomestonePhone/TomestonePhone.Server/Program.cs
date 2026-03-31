@@ -50,6 +50,39 @@ app.Use(async (context, next) =>
 
     await next();
 });
+app.Use(async (context, next) =>
+{
+    if (!context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase)
+        || context.Request.Path.StartsWithSegments("/api/client/version-policy", StringComparison.OrdinalIgnoreCase))
+    {
+        await next();
+        return;
+    }
+
+    var minimumVersion = builder.Configuration["ClientVersionPolicy:MinimumVersion"] ?? string.Empty;
+    if (string.IsNullOrWhiteSpace(minimumVersion))
+    {
+        await next();
+        return;
+    }
+
+    var clientVersion = context.Request.Headers["X-TomestonePhone-Version"].ToString();
+    if (IsClientVersionAllowed(clientVersion, minimumVersion))
+    {
+        await next();
+        return;
+    }
+
+    var updateMessage = builder.Configuration["ClientVersionPolicy:UpdateMessage"] ?? "Please update TomestonePhone to the latest version before using the app.";
+    context.Response.StatusCode = StatusCodes.Status426UpgradeRequired;
+    await context.Response.WriteAsJsonAsync(new
+    {
+        error = updateMessage,
+        minimumVersion,
+        currentVersion = clientVersion,
+        updateMessage,
+    });
+});
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
@@ -119,7 +152,10 @@ app.MapGet("/api/phone/me", async (HttpContext context, IAccountService accounts
                 .Select(item => new AuditLogRecord(item.Id, item.ActorAccountId, item.ActorDisplayName, item.EventType, item.Summary, item.CreatedAtUtc))
                 .ToList();
         }, cancellationToken),
-        await tickets.GetTicketsAsync(accountId.Value, cancellationToken));
+        await tickets.GetTicketsAsync(accountId.Value, cancellationToken),
+        await repository.ReadAsync(state => state.ActiveAnnouncement is null
+            ? null
+            : new ServerAnnouncementRecord(state.ActiveAnnouncement.Id, state.ActiveAnnouncement.Title, state.ActiveAnnouncement.Body, state.ActiveAnnouncement.CreatedAtUtc, state.ActiveAnnouncement.CreatedByDisplayName), cancellationToken));
 
     return Results.Ok(snapshot);
 });
@@ -268,7 +304,7 @@ app.MapPost("/api/messages", async (HttpContext context, SendMessageRequest requ
         return Results.Unauthorized();
     }
 
-    if (!await EnsureInteractiveAccessAsync(accountId.Value, accounts, cancellationToken))
+    if (!await CanSendMessageAsync(accountId.Value, request.ConversationId, accounts, chat, cancellationToken))
     {
         return Results.StatusCode(StatusCodes.Status423Locked);
     }
@@ -499,6 +535,39 @@ app.MapPost("/api/admin/account-role", async (HttpContext context, UpdateAccount
     return Results.Ok(new { success = await accounts.UpdateAccountRoleAsync(accountId.Value, request, cancellationToken) });
 });
 
+app.MapPost("/api/admin/account-status", async (HttpContext context, UpdateAccountStatusRequest request, IAccountService accounts, CancellationToken cancellationToken) =>
+{
+    var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
+    if (accountId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    return Results.Ok(new { success = await accounts.UpdateAccountStatusAsync(accountId.Value, request, cancellationToken) });
+});
+
+app.MapPost("/api/admin/announcement", async (HttpContext context, UpsertServerAnnouncementRequest request, IAccountService accounts, CancellationToken cancellationToken) =>
+{
+    var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
+    if (accountId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var announcement = await accounts.UpsertServerAnnouncementAsync(accountId.Value, request, cancellationToken);
+    return announcement is null ? Results.BadRequest() : Results.Ok(announcement);
+});
+
+app.MapPost("/api/admin/announcement/clear", async (HttpContext context, IAccountService accounts, CancellationToken cancellationToken) =>
+{
+    var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
+    if (accountId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    return Results.Ok(new { success = await accounts.ClearServerAnnouncementAsync(accountId.Value, cancellationToken) });
+});
 app.MapPost("/api/admin/reset-password", async (HttpContext context, AdminPasswordResetRequest request, IAccountService accounts, CancellationToken cancellationToken) =>
 {
     var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
@@ -526,6 +595,16 @@ static async Task<Guid?> ResolveAccountIdAsync(HttpContext context, IAccountServ
     return await accounts.AuthenticateAsync(token, cancellationToken);
 }
 
+static async Task<bool> CanSendMessageAsync(Guid accountId, Guid conversationId, IAccountService accounts, IChatService chat, CancellationToken cancellationToken)
+{
+    var profile = await accounts.GetProfileAsync(accountId, cancellationToken);
+    return profile.Status switch
+    {
+        AccountStatus.Active => true,
+        AccountStatus.Suspended => await chat.CanSendMessageInConversationAsync(accountId, conversationId, cancellationToken),
+        _ => false,
+    };
+}
 static async Task<bool> EnsureInteractiveAccessAsync(Guid accountId, IAccountService accounts, CancellationToken cancellationToken)
 {
     var profile = await accounts.GetProfileAsync(accountId, cancellationToken);
@@ -533,4 +612,26 @@ static async Task<bool> EnsureInteractiveAccessAsync(Guid accountId, IAccountSer
 }
 
 
+
+
+
+static bool IsClientVersionAllowed(string? clientVersion, string? minimumVersion)
+{
+    if (string.IsNullOrWhiteSpace(minimumVersion))
+    {
+        return true;
+    }
+
+    if (!Version.TryParse(minimumVersion, out var minimum))
+    {
+        return true;
+    }
+
+    if (!Version.TryParse(clientVersion, out var current))
+    {
+        return false;
+    }
+
+    return current >= minimum;
+}
 

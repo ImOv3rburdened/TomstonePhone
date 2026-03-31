@@ -34,6 +34,8 @@ public sealed class PhoneTheme : IDisposable
         theme.PushStyle(ImGuiStyleVar.ScrollbarSize, 8f);
         theme.PushStyle(ImGuiStyleVar.ChildBorderSize, 0f);
         theme.PushStyle(ImGuiStyleVar.FrameBorderSize, 0f);
+        theme.PushStyle(ImGuiStyleVar.ButtonTextAlign, new Vector2(0.5f, 0.5f));
+        theme.PushStyle(ImGuiStyleVar.SelectableTextAlign, new Vector2(0.5f, 0.5f));
 
         theme.PushColor(ImGuiCol.WindowBg, window);
         theme.PushColor(ImGuiCol.ChildBg, panel);

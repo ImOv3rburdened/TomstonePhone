@@ -9,6 +9,7 @@ public static class SeedData
     {
         var state = new PersistedAppState
         {
+            SchemaVersion = AppStateMigrator.LatestSchemaVersion,
             NextPhoneNumber = 5550100000L,
         };
 

@@ -38,18 +38,23 @@ public sealed class MariaDbPhoneRepository : IPhoneRepository
         try
         {
             await this.EnsureInitializedAsync(cancellationToken);
+            await this.ApplyPendingMigrationsAsync(cancellationToken);
+            this.initialized = true;
         }
         finally
         {
             this.gate.Release();
         }
     }
+
     public async Task<T> ReadAsync<T>(Func<PersistedAppState, T> action, CancellationToken cancellationToken = default)
     {
         await this.gate.WaitAsync(cancellationToken);
         try
         {
             await this.EnsureInitializedAsync(cancellationToken);
+            await this.ApplyPendingMigrationsAsync(cancellationToken);
+            this.initialized = true;
             var state = await this.LoadStateAsync(cancellationToken);
             return action(state);
         }
@@ -65,6 +70,8 @@ public sealed class MariaDbPhoneRepository : IPhoneRepository
         try
         {
             await this.EnsureInitializedAsync(cancellationToken);
+            await this.ApplyPendingMigrationsAsync(cancellationToken);
+            this.initialized = true;
             var state = await this.LoadStateAsync(cancellationToken);
             var result = action(state);
             await this.SaveStateAsync(state, cancellationToken);
@@ -109,8 +116,17 @@ public sealed class MariaDbPhoneRepository : IPhoneRepository
                 await this.SaveStateAsync(SeedData.Create(this.bootstrapOwner), connection, cancellationToken);
             }
         }
+    }
 
-        this.initialized = true;
+    private async Task ApplyPendingMigrationsAsync(CancellationToken cancellationToken)
+    {
+        var state = await this.LoadStateAsync(cancellationToken);
+        if (!AppStateMigrator.Migrate(state))
+        {
+            return;
+        }
+
+        await this.SaveStateAsync(state, cancellationToken);
     }
 
     private async Task<PersistedAppState> LoadStateAsync(CancellationToken cancellationToken)
@@ -156,4 +172,5 @@ public sealed class MariaDbPhoneRepository : IPhoneRepository
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 }
+
 
