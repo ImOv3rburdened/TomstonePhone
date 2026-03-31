@@ -12,6 +12,7 @@ public sealed class JsonPhoneRepository : IPhoneRepository
     {
         WriteIndented = true,
     };
+    private bool initialized;
 
     public JsonPhoneRepository(IHostEnvironment environment, Microsoft.Extensions.Options.IOptions<BootstrapOwnerOptions> bootstrapOwner)
     {
@@ -26,7 +27,9 @@ public sealed class JsonPhoneRepository : IPhoneRepository
         await this.gate.WaitAsync(cancellationToken);
         try
         {
-            _ = await this.LoadStateAsync(cancellationToken);
+            await this.EnsureInitializedAsync(cancellationToken);
+            await this.ApplyPendingMigrationsAsync(cancellationToken);
+            this.initialized = true;
         }
         finally
         {
@@ -39,6 +42,9 @@ public sealed class JsonPhoneRepository : IPhoneRepository
         await this.gate.WaitAsync(cancellationToken);
         try
         {
+            await this.EnsureInitializedAsync(cancellationToken);
+            await this.ApplyPendingMigrationsAsync(cancellationToken);
+            this.initialized = true;
             var state = await this.LoadStateAsync(cancellationToken);
             return action(state);
         }
@@ -53,6 +59,9 @@ public sealed class JsonPhoneRepository : IPhoneRepository
         await this.gate.WaitAsync(cancellationToken);
         try
         {
+            await this.EnsureInitializedAsync(cancellationToken);
+            await this.ApplyPendingMigrationsAsync(cancellationToken);
+            this.initialized = true;
             var state = await this.LoadStateAsync(cancellationToken);
             var result = action(state);
             await this.SaveStateAsync(state, cancellationToken);
@@ -62,6 +71,31 @@ public sealed class JsonPhoneRepository : IPhoneRepository
         {
             this.gate.Release();
         }
+    }
+
+    private async Task EnsureInitializedAsync(CancellationToken cancellationToken)
+    {
+        if (this.initialized)
+        {
+            return;
+        }
+
+        if (!File.Exists(this.statePath))
+        {
+            var state = SeedData.Create(this.bootstrapOwner);
+            await this.SaveStateAsync(state, cancellationToken);
+        }
+    }
+
+    private async Task ApplyPendingMigrationsAsync(CancellationToken cancellationToken)
+    {
+        var state = await this.LoadStateAsync(cancellationToken);
+        if (!AppStateMigrator.Migrate(state))
+        {
+            return;
+        }
+
+        await this.SaveStateAsync(state, cancellationToken);
     }
 
     private async Task<PersistedAppState> LoadStateAsync(CancellationToken cancellationToken)
@@ -84,3 +118,5 @@ public sealed class JsonPhoneRepository : IPhoneRepository
         await JsonSerializer.SerializeAsync(stream, state, this.jsonOptions, cancellationToken);
     }
 }
+
+

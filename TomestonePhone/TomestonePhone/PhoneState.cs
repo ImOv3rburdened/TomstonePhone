@@ -26,6 +26,8 @@ public sealed class PhoneState
 
     public required List<SupportTicketRecord> SupportTickets { get; set; }
 
+    public ServerAnnouncementRecord? ActiveAnnouncement { get; set; }
+
     public ActiveCallState? ActiveCall { get; set; }
 
     public int UnreadConversationCount => this.Conversations.Sum(item => item.UnreadCount);
@@ -47,6 +49,7 @@ public sealed class PhoneState
             VisibleReports = [],
             VisibleAuditLogs = [],
             SupportTickets = [],
+            ActiveAnnouncement = null,
             ActiveCall = null,
         };
     }
@@ -63,5 +66,6 @@ public sealed class PhoneState
         this.VisibleReports = snapshot.VisibleReports.ToList();
         this.VisibleAuditLogs = snapshot.VisibleAuditLogs.ToList();
         this.SupportTickets = snapshot.SupportTickets.ToList();
+        this.ActiveAnnouncement = snapshot.ActiveAnnouncement;
     }
 }

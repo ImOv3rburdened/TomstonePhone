@@ -10,4 +10,5 @@ public sealed record PhoneSnapshot(
     IReadOnlyList<FriendRequestRecord> FriendRequests,
     IReadOnlyList<ReportRecord> VisibleReports,
     IReadOnlyList<AuditLogRecord> VisibleAuditLogs,
-    IReadOnlyList<SupportTicketRecord> SupportTickets);
+    IReadOnlyList<SupportTicketRecord> SupportTickets,
+    ServerAnnouncementRecord? ActiveAnnouncement);

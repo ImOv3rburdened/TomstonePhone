@@ -47,7 +47,7 @@ public sealed class AccountService : IAccountService
                 return null;
             }
 
-            if (account.Status is nameof(AccountStatus.Banned) or nameof(AccountStatus.Suspended))
+            if (account.Status == nameof(AccountStatus.Banned))
             {
                 return null;
             }
@@ -209,7 +209,8 @@ public sealed class AccountService : IAccountService
                 {
                     var owner = state.Accounts.Single(account => account.Id == item.AccountId);
                     return new SupportTicketRecord(item.Id, item.ConversationId, item.AccountId, owner.DisplayName, item.Subject, item.Body, Enum.TryParse<SupportTicketStatus>(item.Status, out var ticketStatus) ? ticketStatus : SupportTicketStatus.Open, item.CreatedAtUtc, item.ClosedAtUtc, item.ClosedByAccountId, item.IsModerationCase);
-                }).ToList());
+                }).ToList(),
+                MapAnnouncement(state.ActiveAnnouncement));
         }, cancellationToken);
     }
 
@@ -246,7 +247,6 @@ public sealed class AccountService : IAccountService
         }, cancellationToken);
     }
 
-
     public Task<bool> UpdateAccountRoleAsync(Guid actorAccountId, UpdateAccountRoleRequest request, CancellationToken cancellationToken = default)
     {
         return this.repository.WriteAsync(state =>
@@ -278,6 +278,111 @@ public sealed class AccountService : IAccountService
             return true;
         }, cancellationToken);
     }
+
+    public Task<bool> UpdateAccountStatusAsync(Guid actorAccountId, UpdateAccountStatusRequest request, CancellationToken cancellationToken = default)
+    {
+        return this.repository.WriteAsync(state =>
+        {
+            var actor = state.Accounts.Single(item => item.Id == actorAccountId);
+            if (actor.Role != nameof(AccountRole.Owner) || request.AccountId == actorAccountId)
+            {
+                return false;
+            }
+
+            var account = state.Accounts.SingleOrDefault(item => item.Id == request.AccountId);
+            if (account is null || account.Role == nameof(AccountRole.Owner))
+            {
+                return false;
+            }
+
+            account.Status = request.Status.ToString();
+            if (request.Status == AccountStatus.Banned)
+            {
+                state.Sessions.RemoveAll(item => item.AccountId == account.Id);
+            }
+
+            state.AuditLogs.Add(new PersistedAuditLog
+            {
+                Id = Guid.NewGuid(),
+                ActorAccountId = actor.Id,
+                ActorDisplayName = actor.DisplayName,
+                EventType = "AccountStatusChanged",
+                Summary = $"Owner changed status for {account.Username} to {account.Status}.",
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+            });
+
+            return true;
+        }, cancellationToken);
+    }
+
+    public Task<ServerAnnouncementRecord?> UpsertServerAnnouncementAsync(Guid actorAccountId, UpsertServerAnnouncementRequest request, CancellationToken cancellationToken = default)
+    {
+        return this.repository.WriteAsync(state =>
+        {
+            var actor = state.Accounts.Single(item => item.Id == actorAccountId);
+            if (actor.Role != nameof(AccountRole.Owner))
+            {
+                return null;
+            }
+
+            if (string.IsNullOrWhiteSpace(request.Title) && string.IsNullOrWhiteSpace(request.Body))
+            {
+                return null;
+            }
+
+            state.ActiveAnnouncement = new PersistedServerAnnouncement
+            {
+                Id = Guid.NewGuid(),
+                Title = request.Title?.Trim() ?? string.Empty,
+                Body = request.Body?.Trim() ?? string.Empty,
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                CreatedByAccountId = actor.Id,
+                CreatedByDisplayName = actor.DisplayName,
+            };
+
+            state.AuditLogs.Add(new PersistedAuditLog
+            {
+                Id = Guid.NewGuid(),
+                ActorAccountId = actor.Id,
+                ActorDisplayName = actor.DisplayName,
+                EventType = "ServerAnnouncementUpdated",
+                Summary = $"Owner posted server announcement '{state.ActiveAnnouncement.Title}'.",
+                CreatedAtUtc = state.ActiveAnnouncement.CreatedAtUtc,
+            });
+
+            return MapAnnouncement(state.ActiveAnnouncement);
+        }, cancellationToken);
+    }
+
+    public Task<bool> ClearServerAnnouncementAsync(Guid actorAccountId, CancellationToken cancellationToken = default)
+    {
+        return this.repository.WriteAsync(state =>
+        {
+            var actor = state.Accounts.Single(item => item.Id == actorAccountId);
+            if (actor.Role != nameof(AccountRole.Owner))
+            {
+                return false;
+            }
+
+            if (state.ActiveAnnouncement is null)
+            {
+                return true;
+            }
+
+            state.AuditLogs.Add(new PersistedAuditLog
+            {
+                Id = Guid.NewGuid(),
+                ActorAccountId = actor.Id,
+                ActorDisplayName = actor.DisplayName,
+                EventType = "ServerAnnouncementCleared",
+                Summary = $"Owner cleared server announcement '{state.ActiveAnnouncement.Title}'.",
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+            });
+            state.ActiveAnnouncement = null;
+            return true;
+        }, cancellationToken);
+    }
+
     private static AdminAccountSummary MapAdminSummary(PersistedAccount account)
     {
         return new AdminAccountSummary(
@@ -288,6 +393,13 @@ public sealed class AccountService : IAccountService
             Enum.TryParse<AccountRole>(account.Role, out var role) ? role : AccountRole.User,
             Enum.TryParse<AccountStatus>(account.Status, out var status) ? status : AccountStatus.Active,
             account.KnownIpAddresses.OrderBy(item => item).ToList());
+    }
+
+    private static ServerAnnouncementRecord? MapAnnouncement(PersistedServerAnnouncement? announcement)
+    {
+        return announcement is null
+            ? null
+            : new ServerAnnouncementRecord(announcement.Id, announcement.Title, announcement.Body, announcement.CreatedAtUtc, announcement.CreatedByDisplayName);
     }
 
     private static PhoneProfile MapProfile(PersistedAccount account)
@@ -316,4 +428,3 @@ public sealed class AccountService : IAccountService
                 : new UserAvatarLayout(account.Avatar.RelativePath, account.Avatar.Zoom, account.Avatar.OffsetX, account.Avatar.OffsetY, account.Avatar.ViewportSize, account.Avatar.UpdatedAtUtc));
     }
 }
-

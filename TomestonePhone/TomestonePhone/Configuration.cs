@@ -73,6 +73,8 @@ public sealed class Configuration : IPluginConfiguration
 
     public List<GifFavorite> GifFavorites { get; set; } = [];
 
+    public List<Guid> SeenAnnouncementIds { get; set; } = [];
+
     public void NormalizeServerBaseUrl()
     {
         if (string.IsNullOrWhiteSpace(this.ServerBaseUrl))

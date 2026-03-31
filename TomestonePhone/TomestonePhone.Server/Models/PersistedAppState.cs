@@ -2,6 +2,8 @@ namespace TomestonePhone.Server.Models;
 
 public sealed class PersistedAppState
 {
+    public int SchemaVersion { get; set; }
+
     public long NextPhoneNumber { get; set; } = 5550102000;
 
     public List<PersistedAccount> Accounts { get; set; } = [];
@@ -23,4 +25,6 @@ public sealed class PersistedAppState
     public List<PersistedSupportTicket> SupportTickets { get; set; } = [];
 
     public List<PersistedSession> Sessions { get; set; } = [];
+
+    public PersistedServerAnnouncement? ActiveAnnouncement { get; set; }
 }

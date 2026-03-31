@@ -17,4 +17,6 @@ public interface IChatService
     Task<ConversationDetail?> ModerateConversationAsync(Guid actorAccountId, ConversationModerationRequest request, CancellationToken cancellationToken = default);
 
     Task<ConversationSummary> StartDirectConversationAsync(Guid senderAccountId, StartDirectConversationRequest request, CancellationToken cancellationToken = default);
+
+    Task<bool> CanSendMessageInConversationAsync(Guid accountId, Guid conversationId, CancellationToken cancellationToken = default);
 }

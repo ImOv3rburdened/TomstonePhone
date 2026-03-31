@@ -27,4 +27,10 @@ public interface IAccountService
     Task<bool> ResetPasswordAsOwnerAsync(Guid actorAccountId, AdminPasswordResetRequest request, CancellationToken cancellationToken = default);
 
     Task<bool> UpdateAccountRoleAsync(Guid actorAccountId, UpdateAccountRoleRequest request, CancellationToken cancellationToken = default);
+
+    Task<bool> UpdateAccountStatusAsync(Guid actorAccountId, UpdateAccountStatusRequest request, CancellationToken cancellationToken = default);
+
+    Task<ServerAnnouncementRecord?> UpsertServerAnnouncementAsync(Guid actorAccountId, UpsertServerAnnouncementRequest request, CancellationToken cancellationToken = default);
+
+    Task<bool> ClearServerAnnouncementAsync(Guid actorAccountId, CancellationToken cancellationToken = default);
 }
