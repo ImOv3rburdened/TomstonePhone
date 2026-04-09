@@ -8,4 +8,7 @@ public sealed record ChatMessageRecord(
     string Body,
     DateTimeOffset SentAtUtc,
     bool IsDeletedForUsers,
-    IReadOnlyList<ExternalMediaEmbedRecord> Embeds);
+    IReadOnlyList<ExternalMediaEmbedRecord> Embeds,
+    ChatMessageKind Kind,
+    Guid? RelatedCallId,
+    int? RelatedCallDurationSeconds);

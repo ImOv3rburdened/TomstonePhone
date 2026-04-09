@@ -21,27 +21,33 @@ public sealed class Configuration : IPluginConfiguration
 
     public string? RememberedPasswordProtected { get; set; }
 
-    public string BackgroundImagePath { get; set; } = Path.Combine(AssetRoot, "phone-wallpaper-default.svg");
+    public string BackgroundImagePath { get; set; } = string.Empty;
 
-    public string ContactsIconPath { get; set; } = Path.Combine(AssetRoot, "app-contacts.svg");
+    public float BackgroundZoom { get; set; } = 1f;
 
-    public string MessagesIconPath { get; set; } = Path.Combine(AssetRoot, "app-messages.svg");
+    public float BackgroundOffsetX { get; set; }
 
-    public string CallsIconPath { get; set; } = Path.Combine(AssetRoot, "app-phone.svg");
+    public float BackgroundOffsetY { get; set; }
 
-    public string FriendsIconPath { get; set; } = Path.Combine(AssetRoot, "app-friends.svg");
+    public string ContactsIconPath { get; set; } = "embedded://app-contacts.png";
 
-    public string SettingsIconPath { get; set; } = Path.Combine(AssetRoot, "app-settings.svg");
+    public string MessagesIconPath { get; set; } = "embedded://app-messages.png";
 
-    public string LegalIconPath { get; set; } = Path.Combine(AssetRoot, "app-legal.svg");
+    public string CallsIconPath { get; set; } = "embedded://app-phone.png";
 
-    public string PrivacyIconPath { get; set; } = Path.Combine(AssetRoot, "app-legal.svg");
+    public string FriendsIconPath { get; set; } = "embedded://app-friends.png";
 
-    public string SupportIconPath { get; set; } = Path.Combine(AssetRoot, "app-settings.svg");
+    public string SettingsIconPath { get; set; } = "embedded://app-settings.png";
 
-    public string StaffIconPath { get; set; } = Path.Combine(AssetRoot, "app-settings.svg");
+    public string LegalIconPath { get; set; } = "embedded://app-legal.png";
 
-    public string AppIconPath { get; set; } = Path.Combine(AssetRoot, "tomestone-app-icon.svg");
+    public string PrivacyIconPath { get; set; } = "embedded://app-privacy.png";
+
+    public string SupportIconPath { get; set; } = "embedded://app-support.png";
+
+    public string StaffIconPath { get; set; } = "embedded://app-staff.png";
+
+    public string AppIconPath { get; set; } = Path.Combine(AssetRoot, "tomestone-app-icon.png");
 
     public string AccentColorHex { get; set; } = "#D9B56D";
 
@@ -69,11 +75,27 @@ public sealed class Configuration : IPluginConfiguration
 
     public string LocalAccountLockoutReason { get; set; } = string.Empty;
 
+    public bool PlayOpenEmote { get; set; }
+
+    public bool OpenEmoteSetupSeen { get; set; }
+
     public bool GiphySetupSeen { get; set; }
 
     public List<GifFavorite> GifFavorites { get; set; } = [];
 
     public List<Guid> SeenAnnouncementIds { get; set; } = [];
+
+    public string GetLocalUserAssetDirectory()
+    {
+        var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TomestonePhone");
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    public string GetLocalWallpaperPath()
+    {
+        return Path.Combine(this.GetLocalUserAssetDirectory(), "wallpaper.png");
+    }
 
     public void NormalizeServerBaseUrl()
     {
@@ -133,3 +155,5 @@ public sealed class Configuration : IPluginConfiguration
         }
     }
 }
+
+

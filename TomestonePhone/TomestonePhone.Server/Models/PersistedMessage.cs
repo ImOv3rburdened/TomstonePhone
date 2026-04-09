@@ -17,4 +17,10 @@ public sealed class PersistedMessage
     public bool IsDeletedForUsers { get; set; }
 
     public List<PersistedExternalEmbed> Embeds { get; set; } = [];
+
+    public string Kind { get; set; } = nameof(TomestonePhone.Shared.Models.ChatMessageKind.User);
+
+    public Guid? RelatedCallId { get; set; }
+
+    public int? RelatedCallDurationSeconds { get; set; }
 }

@@ -6,6 +6,7 @@ public sealed record PhoneSnapshot(
     IReadOnlyList<ContactRecord> Contacts,
     IReadOnlyList<ContactRecord> BlockedContacts,
     IReadOnlyList<ConversationSummary> Conversations,
+    IReadOnlyList<ActiveCallSessionRecord> ActiveCalls,
     IReadOnlyList<CallSummary> RecentCalls,
     IReadOnlyList<FriendRequestRecord> FriendRequests,
     IReadOnlyList<ReportRecord> VisibleReports,

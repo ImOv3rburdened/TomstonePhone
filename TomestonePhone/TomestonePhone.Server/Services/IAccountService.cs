@@ -14,9 +14,15 @@ public interface IAccountService
 
     Task<bool> IsIpBannedAsync(string ipAddress, CancellationToken cancellationToken = default);
 
+    Task<bool> HeartbeatAsync(Guid accountId, CancellationToken cancellationToken = default);
+
     Task<PhoneProfile> UpdateNotificationSettingsAsync(Guid accountId, UpdateNotificationSettingsRequest request, CancellationToken cancellationToken = default);
 
+    Task<PhoneProfile> UpdatePresenceStatusAsync(Guid accountId, UpdatePresenceStatusRequest request, CancellationToken cancellationToken = default);
+
     Task<bool> ChangePasswordAsync(Guid accountId, PasswordResetSelfRequest request, CancellationToken cancellationToken = default);
+
+    Task<bool> DeleteOwnAccountAsync(Guid accountId, DeleteAccountRequest request, CancellationToken cancellationToken = default);
 
     Task<PhoneProfile> AcceptPrivacyPolicyAsync(Guid accountId, AcceptPrivacyPolicyRequest request, CancellationToken cancellationToken = default);
 

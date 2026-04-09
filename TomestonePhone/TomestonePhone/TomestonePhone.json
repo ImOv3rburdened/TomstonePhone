@@ -1,18 +1,9 @@
 {
-  "Author": "Tangy",
-  "Name": "TomestonePhone",
-  "Punchline": "A self-contained in-game tomestone phone.",
-  "Description": "Contacts, SMS, calls, group chat, and friend management through a styled tomestone UI.",
-  "InternalName": "TomestonePhone",
-  "AssemblyVersion": "0.1.8.0",
-  "ApplicableVersion": "any",
-  "DalamudApiLevel": 14
+    "Author":  "Tangy",
+    "Name":  "TomestonePhone",
+    "Punchline":  "A self-contained in-game tomestone phone.",
+    "Description":  "Contacts, SMS, calls, group chat, and friend management through a styled tomestone UI.",
+    "InternalName":  "TomestonePhone",
+    "AssemblyVersion":  "0.1.9.0",
+    "ApplicableVersion":  "any"
 }
-
-
-
-
-
-
-
-

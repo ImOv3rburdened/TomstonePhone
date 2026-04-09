@@ -124,6 +124,47 @@ public sealed class TomestonePhoneClient : IDisposable
         await this.EnsureSuccessAsync(response, "Call start", cancellationToken);
         return await response.Content.ReadFromJsonAsync<CallSummary>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Call start returned no payload.");
     }
+
+    public async Task<IReadOnlyList<ActiveCallSessionRecord>> GetActiveCallsAsync(string token, CancellationToken cancellationToken = default)
+    {
+        this.ApplyBaseAddress();
+        this.SetAuth(token);
+        var response = await this.httpClient.GetAsync("/api/calls/active", cancellationToken);
+        await this.EnsureSuccessAsync(response, "Active calls", cancellationToken);
+        return await response.Content.ReadFromJsonAsync<List<ActiveCallSessionRecord>>(cancellationToken: cancellationToken) ?? [];
+    }
+
+    public async Task<ActiveCallSessionRecord> StartOrJoinActiveCallAsync(string token, StartCallRequest request, CancellationToken cancellationToken = default)
+    {
+        this.ApplyBaseAddress();
+        this.SetAuth(token);
+        var response = await this.httpClient.PostAsJsonAsync("/api/calls/session/start", request, cancellationToken);
+        await this.EnsureSuccessAsync(response, "Active call session", cancellationToken);
+        return await response.Content.ReadFromJsonAsync<ActiveCallSessionRecord>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Active call session returned no payload.");
+    }
+
+    public async Task<CallSummary?> EndActiveCallAsync(string token, Guid sessionId, CancellationToken cancellationToken = default)
+    {
+        this.ApplyBaseAddress();
+        this.SetAuth(token);
+        var response = await this.httpClient.PostAsJsonAsync("/api/calls/session/end", new EndActiveCallRequest(sessionId), cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            await this.EnsureSuccessAsync(response, "End active call", cancellationToken);
+        }
+
+        return await response.Content.ReadFromJsonAsync<CallSummary>(cancellationToken: cancellationToken);
+    }
+
+    public async Task<int> AcknowledgeMissedCallsAsync(string token, CancellationToken cancellationToken = default)
+    {
+        this.ApplyBaseAddress();
+        this.SetAuth(token);
+        var response = await this.httpClient.PostAsync("/api/calls/missed/acknowledge", null, cancellationToken);
+        await this.EnsureSuccessAsync(response, "Acknowledge missed calls", cancellationToken);
+        var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
+        return payload?.Count ?? 0;
+    }
     public async Task<bool> BlockAccountAsync(string token, Guid targetAccountId, CancellationToken cancellationToken = default)
     {
         this.ApplyBaseAddress();
@@ -234,6 +275,16 @@ public sealed class TomestonePhoneClient : IDisposable
         return payload?.Success ?? false;
     }
 
+    public async Task<bool> DeleteAccountAsync(string token, DeleteAccountRequest request, CancellationToken cancellationToken = default)
+    {
+        this.ApplyBaseAddress();
+        this.SetAuth(token);
+        var response = await this.httpClient.PostAsJsonAsync("/api/account/delete", request, cancellationToken);
+        await this.EnsureSuccessAsync(response, "Delete account", cancellationToken);
+        var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
+        return payload?.Success ?? false;
+    }
+
     public async Task<PhoneProfile> UpdateNotificationSettingsAsync(string token, bool muted, CancellationToken cancellationToken = default)
     {
         this.ApplyBaseAddress();
@@ -241,6 +292,15 @@ public sealed class TomestonePhoneClient : IDisposable
         var response = await this.httpClient.PostAsJsonAsync("/api/account/notifications", new UpdateNotificationSettingsRequest(muted), cancellationToken);
         await this.EnsureSuccessAsync(response, "Notification settings", cancellationToken);
         return await response.Content.ReadFromJsonAsync<PhoneProfile>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Notification settings returned no payload.");
+    }
+
+    public async Task<PhoneProfile> UpdatePresenceStatusAsync(string token, PhonePresenceStatus presenceStatus, CancellationToken cancellationToken = default)
+    {
+        this.ApplyBaseAddress();
+        this.SetAuth(token);
+        var response = await this.httpClient.PostAsJsonAsync("/api/account/presence", new UpdatePresenceStatusRequest(presenceStatus), cancellationToken);
+        await this.EnsureSuccessAsync(response, "Presence status", cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PhoneProfile>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Presence status returned no payload.");
     }
 
     public async Task<PhoneProfile> AcceptPrivacyPolicyAsync(string token, CancellationToken cancellationToken = default)
@@ -419,6 +479,8 @@ public sealed class TomestonePhoneClient : IDisposable
     private sealed class OperationResult
     {
         public bool Success { get; set; }
+
+        public int Count { get; set; }
     }
 
     private sealed class ErrorPayload
@@ -427,11 +489,15 @@ public sealed class TomestonePhoneClient : IDisposable
 
         public string? MinimumVersion { get; set; }
 
+        public string? RecommendedVersion { get; set; }
+
         public string? UpdateMessage { get; set; }
+
+        public string? RecommendedMessage { get; set; }
     }
 }
 
-public sealed record ClientVersionPolicyResult(string MinimumVersion, string UpdateMessage);
+public sealed record ClientVersionPolicyResult(string MinimumVersion, string RecommendedVersion, string UpdateMessage, string RecommendedMessage);
 
 public sealed class ClientUpgradeRequiredException(string minimumVersion, string updateMessage) : InvalidOperationException(updateMessage)
 {
@@ -439,3 +505,7 @@ public sealed class ClientUpgradeRequiredException(string minimumVersion, string
 
     public string UpdateMessage { get; } = updateMessage;
 }
+
+
+
+

@@ -22,7 +22,7 @@ public sealed class PhoneDirectoryService : IPhoneDirectoryService
                 .Select(item =>
                 {
                     var preference = owner.ContactPreferences[item.Id];
-                    return new ContactRecord(item.Id, preference.DisplayName, item.PhoneNumber, preference.Note);
+                    return new ContactRecord(item.Id, AccountLabelFormatter.IsInactive(item) ? $"{preference.DisplayName} (Deactivated account)" : preference.DisplayName, item.PhoneNumber, preference.Note);
                 })
                 .OrderBy(item => item.DisplayName)
                 .ToList();
@@ -36,7 +36,7 @@ public sealed class PhoneDirectoryService : IPhoneDirectoryService
             var owner = state.Accounts.Single(item => item.Id == accountId);
             return state.Accounts
                 .Where(item => owner.BlockedAccountIds.Contains(item.Id))
-                .Select(item => new ContactRecord(item.Id, item.DisplayName, item.PhoneNumber, "Blocked"))
+                .Select(item => new ContactRecord(item.Id, AccountLabelFormatter.GetDisplayName(item), item.PhoneNumber, "Blocked"))
                 .OrderBy(item => item.DisplayName)
                 .ToList();
         }, cancellationToken);
@@ -50,7 +50,7 @@ public sealed class PhoneDirectoryService : IPhoneDirectoryService
             var contact = state.Accounts.Single(item => item.Id == request.ContactAccountId);
             owner.ContactPreferences[contact.Id] = new PersistedContactPreference
             {
-                DisplayName = string.IsNullOrWhiteSpace(request.DisplayName) ? contact.DisplayName : request.DisplayName,
+                DisplayName = string.IsNullOrWhiteSpace(request.DisplayName) ? AccountLabelFormatter.GetDisplayName(contact) : request.DisplayName,
                 Note = request.Note ?? string.Empty,
             };
 
@@ -77,3 +77,4 @@ public sealed class PhoneDirectoryService : IPhoneDirectoryService
         }, cancellationToken);
     }
 }
+

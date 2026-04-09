@@ -31,7 +31,7 @@ The backend is ready for local hosting, Docker, or Coolify deployment. It stores
 - Home screen with Messages, Calls, Contacts, Friends, Settings, Legal, Privacy, Support, and Staff apps
 - Direct messaging to any username or phone number
 - Group conversations with ownership and moderator controls
-- Call history, incoming call banner, active call controls, and missed call counts
+- Call history, incoming call banner, active call controls, missed call counts, and voice-session metadata for Murmur-style voice rooms
 - Contacts, bilateral friendships, pending friend requests, blocking, and unblock controls
 - Local machine acceptance flow for Terms of Service and Privacy Policy
 - Always-accessible Legal and Privacy screens in both the plugin and the browser portal
@@ -43,6 +43,34 @@ The backend is ready for local hosting, Docker, or Coolify deployment. It stores
 - External image and GIF links allowed as message embeds
 - Dockerfile, Compose file, and Coolify deployment files
 
+
+## Voice Roadmap
+
+TomestonePhone now includes a server-side voice-session scaffold aimed at a low-bandwidth Murmur or Mumble deployment.
+
+Current state:
+- The server can attach voice-room metadata to calls.
+- The plugin can surface the configured voice profile in the Calls UI.
+- Real microphone capture and playback are not wired yet.
+
+Voice config lives in [appsettings.json](E:\Github\TomstonePhone\TomestonePhone\TomestonePhone.Server\appsettings.json):
+
+```json
+"Voice": {
+  "Enabled": false,
+  "Provider": "Murmur",
+  "Host": "",
+  "TcpPort": 64738,
+  "UdpPort": 64738,
+  "QualityLabel": "Aether Voice (Low Bandwidth)",
+  "SampleRateHz": 16000,
+  "BitrateKbps": 16,
+  "FrameSizeMs": 20
+}
+```
+
+A Murmur template file is included here:
+- `E:\Github\TomstonePhone\TomestonePhone\TomestonePhone.Server\murmur.ini.example`
 ## Runtime Files
 
 - Web portal: `http://localhost:5050/`

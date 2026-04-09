@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Options;
 using TomestonePhone.Server.Models;
 using TomestonePhone.Shared.Models;
 
@@ -6,10 +7,12 @@ namespace TomestonePhone.Server.Services;
 public sealed class ChatService : IChatService
 {
     private readonly IPhoneRepository repository;
+    private readonly GroupConversationPolicyOptions groupConversationPolicy;
 
-    public ChatService(IPhoneRepository repository)
+    public ChatService(IPhoneRepository repository, IOptions<GroupConversationPolicyOptions> groupConversationPolicy)
     {
         this.repository = repository;
+        this.groupConversationPolicy = groupConversationPolicy.Value;
     }
 
     public Task<ConversationSummary> CreateConversationAsync(Guid ownerAccountId, CreateConversationRequest request, CancellationToken cancellationToken = default)
@@ -17,22 +20,29 @@ public sealed class ChatService : IChatService
         return this.repository.WriteAsync(state =>
         {
             SystemConversationCoordinator.EnsureStaffConversation(state);
+            var members = request.ParticipantIds
+                .Append(ownerAccountId)
+                .Distinct()
+                .Select(id => new PersistedConversationMember
+                {
+                    AccountId = id,
+                    Role = id == ownerAccountId ? nameof(GroupMemberRole.Owner) : nameof(GroupMemberRole.Member),
+                    JoinedAtUtc = DateTimeOffset.UtcNow,
+                })
+                .ToList();
+
+            if (request.IsGroup)
+            {
+                this.EnsureCanCreateOrGrowStandardGroup(state, ownerAccountId, members.Count);
+            }
+
             var conversation = new PersistedConversation
             {
                 Id = Guid.NewGuid(),
                 Name = request.Name,
                 IsGroup = request.IsGroup,
                 Kind = SystemConversationCoordinator.StandardConversationKind,
-                Members = request.ParticipantIds
-                    .Append(ownerAccountId)
-                    .Distinct()
-                    .Select(id => new PersistedConversationMember
-                    {
-                        AccountId = id,
-                        Role = id == ownerAccountId ? nameof(GroupMemberRole.Owner) : nameof(GroupMemberRole.Member),
-                        JoinedAtUtc = DateTimeOffset.UtcNow,
-                    })
-                    .ToList(),
+                Members = members,
             };
 
             state.Conversations.Add(conversation);
@@ -100,7 +110,7 @@ public sealed class ChatService : IChatService
                 return MapDetail(state, conversation);
             }
 
-            if (conversation.LinkedSupportTicketId is null && actorRole is GroupMemberRole.Member)
+            if (conversation.LinkedSupportTicketId is null && actorRole is GroupMemberRole.Member && request.Action != ChatModerationAction.AddMember)
             {
                 return null;
             }
@@ -110,6 +120,7 @@ public sealed class ChatService : IChatService
                 case ChatModerationAction.AddMember when request.TargetAccountId is { } addId:
                     if (conversation.Members.All(member => member.AccountId != addId))
                     {
+                        this.EnsureCanCreateOrGrowStandardGroup(state, GetConversationOwnerAccountId(conversation), conversation.Members.Count + 1, conversation);
                         conversation.Members.Add(new PersistedConversationMember
                         {
                             AccountId = addId,
@@ -118,7 +129,7 @@ public sealed class ChatService : IChatService
                         });
                     }
                     break;
-                case ChatModerationAction.RemoveMember when request.TargetAccountId is { } removeId:
+                case ChatModerationAction.RemoveMember when conversation.LinkedSupportTicketId is null && actorRole == GroupMemberRole.Owner && request.TargetAccountId is { } removeId:
                     conversation.Members.RemoveAll(member => member.AccountId == removeId);
                     ReassignOwnerIfNeeded(conversation);
                     break;
@@ -156,7 +167,7 @@ public sealed class ChatService : IChatService
             {
                 var otherAccountId = conversation.Members.Select(item => item.AccountId).First(id => id != senderAccountId);
                 var otherAccount = state.Accounts.Single(item => item.Id == otherAccountId);
-                if (otherAccount.Status == nameof(AccountStatus.Banned))
+                if (AccountLabelFormatter.IsUnavailable(otherAccount))
                 {
                     throw new InvalidOperationException("The number you are trying to reach is no longer in service.");
                 }
@@ -180,6 +191,9 @@ public sealed class ChatService : IChatService
                 SenderGameIdentity = senderGameIdentity,
                 SenderPhoneNumber = sender.PhoneNumber,
                 SentAtUtc = DateTimeOffset.UtcNow,
+                Kind = nameof(ChatMessageKind.User),
+                RelatedCallId = null,
+                RelatedCallDurationSeconds = null,
                 Embeds = request.Embeds?
                     .Where(item => Uri.TryCreate(item.Url, UriKind.Absolute, out _))
                     .Select(item => new PersistedExternalEmbed
@@ -213,6 +227,10 @@ public sealed class ChatService : IChatService
             var target = state.Accounts.Single(item =>
                 item.Username.Equals(request.UsernameOrPhoneNumber, StringComparison.OrdinalIgnoreCase)
                 || item.PhoneNumber == request.UsernameOrPhoneNumber);
+            if (AccountLabelFormatter.IsUnavailable(target))
+            {
+                throw new InvalidOperationException("The number you are trying to reach is no longer in service.");
+            }
 
             var existing = state.Conversations.FirstOrDefault(item =>
                 !item.IsDeleted
@@ -278,7 +296,7 @@ public sealed class ChatService : IChatService
                 .Select(member =>
                 {
                     var account = state.Accounts.Single(item => item.Id == member.AccountId);
-                    return new ConversationMemberRecord(member.AccountId, account.DisplayName, account.PhoneNumber, ParseRole(member.Role), member.JoinedAtUtc);
+                    return new ConversationMemberRecord(member.AccountId, AccountLabelFormatter.GetDisplayName(account), account.PhoneNumber, ParseRole(member.Role), member.JoinedAtUtc);
                 })
                 .ToList(),
             conversation.Messages
@@ -289,15 +307,23 @@ public sealed class ChatService : IChatService
 
     private static ChatMessageRecord MapMessage(PersistedAppState state, Guid conversationId, PersistedMessage item)
     {
+        var sender = state.Accounts.SingleOrDefault(account => account.Id == item.SenderAccountId);
+        var senderName = sender is null ? $"Unknown ({item.SenderAccountId})" : AccountLabelFormatter.GetDisplayName(sender);
+        var senderIdentity = item.SenderGameIdentity is null
+            ? null
+            : new GameIdentityRecord(item.SenderGameIdentity.CharacterName, item.SenderGameIdentity.WorldName, item.SenderGameIdentity.FullHandle);
         return new ChatMessageRecord(
             item.Id,
             conversationId,
-            state.Accounts.Single(account => account.Id == item.SenderAccountId).DisplayName,
-            null,
+            senderName,
+            senderIdentity,
             item.Body,
             item.SentAtUtc,
             item.IsDeletedForUsers,
-            item.Embeds.Select(embed => new ExternalMediaEmbedRecord(embed.Id, embed.Url, ParseEmbedKind(embed.Kind), embed.Url)).ToList());
+            item.Embeds.Select(embed => new ExternalMediaEmbedRecord(embed.Id, embed.Url, ParseEmbedKind(embed.Kind), embed.Url)).ToList(),
+            ParseMessageKind(item.Kind),
+            item.RelatedCallId,
+            item.RelatedCallDurationSeconds);
     }
 
     private static bool IsMessageVisibleToViewer(PersistedAppState state, PersistedConversation conversation, PersistedMessage item, Guid viewerAccountId)
@@ -315,6 +341,26 @@ public sealed class ChatService : IChatService
     private static ExternalEmbedKind ParseEmbedKind(string value)
     {
         return Enum.TryParse<ExternalEmbedKind>(value, out var kind) ? kind : ExternalEmbedKind.Unknown;
+    }
+
+    private static ChatMessageKind ParseMessageKind(string value)
+    {
+        return Enum.TryParse<ChatMessageKind>(value, out var kind) ? kind : ChatMessageKind.User;
+    }
+
+    private static string? GetMessagePreview(PersistedMessage? message)
+    {
+        if (message is null)
+        {
+            return null;
+        }
+
+        return ParseMessageKind(message.Kind) switch
+        {
+            ChatMessageKind.CallStarted => "Call started",
+            ChatMessageKind.CallEnded => $"Call ended{(message.RelatedCallDurationSeconds is > 0 ? $" � {TimeSpan.FromSeconds(message.RelatedCallDurationSeconds.Value):m\\:ss}" : string.Empty)}",
+            _ => message.Body,
+        };
     }
 
     private static ExternalEmbedKind DetectKind(string url)
@@ -342,14 +388,14 @@ public sealed class ChatService : IChatService
         {
             var otherParticipant = conversation.Members.Select(item => item.AccountId).FirstOrDefault(id => id != accountId);
             var account = state.Accounts.SingleOrDefault(item => item.Id == otherParticipant);
-            displayName = account?.DisplayName ?? conversation.Name;
+            displayName = account is null ? conversation.Name : AccountLabelFormatter.GetDisplayName(account);
         }
 
         return new ConversationSummary(
             conversation.Id,
             displayName,
             conversation.IsGroup,
-            last?.Body ?? "No messages yet.",
+            GetMessagePreview(last) ?? "No messages yet.",
             last?.SentAtUtc ?? DateTimeOffset.MinValue,
             0);
     }
@@ -357,6 +403,33 @@ public sealed class ChatService : IChatService
     private static GroupMemberRole ParseRole(string value)
     {
         return Enum.TryParse<GroupMemberRole>(value, out var role) ? role : GroupMemberRole.Member;
+    }
+
+    private void EnsureCanCreateOrGrowStandardGroup(PersistedAppState state, Guid ownerAccountId, int targetMemberCount, PersistedConversation? conversation = null)
+    {
+        if (conversation is not null && conversation.Kind != SystemConversationCoordinator.StandardConversationKind)
+        {
+            return;
+        }
+
+        var owner = state.Accounts.Single(item => item.Id == ownerAccountId);
+        var limit = owner.IsPaidMember ? this.groupConversationPolicy.PaidMemberCap : this.groupConversationPolicy.FreeMemberCap;
+        if (limit <= 0)
+        {
+            return;
+        }
+
+        if (targetMemberCount > limit)
+        {
+            var membershipLabel = owner.IsPaidMember ? "paid" : "standard";
+            throw new InvalidOperationException($"This group is at the {membershipLabel} member cap of {limit}. Remove members or upgrade the host plan before adding more.");
+        }
+    }
+
+    private static Guid GetConversationOwnerAccountId(PersistedConversation conversation)
+    {
+        var owner = conversation.Members.FirstOrDefault(member => ParseRole(member.Role) == GroupMemberRole.Owner);
+        return owner?.AccountId ?? conversation.Members.First().AccountId;
     }
 
     private static void SetMemberRole(PersistedConversation conversation, Guid accountId, GroupMemberRole role)
@@ -383,4 +456,11 @@ public sealed class ChatService : IChatService
         next.Role = nameof(GroupMemberRole.Owner);
     }
 }
+
+
+
+
+
+
+
 

@@ -27,6 +27,7 @@ public sealed class Plugin : IDalamudPlugin
         IPluginLog log,
         ITextureProvider textureProvider,
         IClientState clientState,
+        IPlayerState playerState,
         IObjectTable objectTable,
         IFramework framework)
     {
@@ -42,6 +43,7 @@ public sealed class Plugin : IDalamudPlugin
             Log = log,
             TextureProvider = textureProvider,
             ClientState = clientState,
+            PlayerState = playerState,
             ObjectTable = objectTable,
             Framework = framework,
             Windows = this.windows,
@@ -91,7 +93,7 @@ public sealed class Plugin : IDalamudPlugin
         if (arguments.Contains("config", StringComparison.OrdinalIgnoreCase))
         {
             this.phoneWindow.OpenSettingsTab();
-            this.phoneWindow.IsOpen = true;
+            this.SetPhoneOpenState(true, true);
             return;
         }
 
@@ -100,13 +102,36 @@ public sealed class Plugin : IDalamudPlugin
 
     private void ToggleUi()
     {
-        this.phoneWindow.IsOpen = !this.phoneWindow.IsOpen;
+        this.SetPhoneOpenState(!this.phoneWindow.IsOpen, true);
     }
 
     private void OpenSettings()
     {
         this.phoneWindow.OpenSettingsTab();
-        this.phoneWindow.IsOpen = true;
+        this.SetPhoneOpenState(true, false);
+    }
+
+    private void SetPhoneOpenState(bool isOpen, bool triggerCommandEmote)
+    {
+        var wasOpen = this.phoneWindow.IsOpen;
+        this.phoneWindow.IsOpen = isOpen;
+
+        if (!wasOpen && isOpen && triggerCommandEmote && this.configuration.PlayOpenEmote)
+        {
+            this.TryPlayOpenEmote();
+        }
+    }
+
+    private void TryPlayOpenEmote()
+    {
+        try
+        {
+            this.service.Commands.ProcessCommand("/tomestonephone");
+        }
+        catch (Exception ex)
+        {
+            this.service.Log.Warning(ex, "Failed to play /tomestonephone when opening the phone.");
+        }
     }
 
     private void DrawUi()
@@ -114,6 +139,8 @@ public sealed class Plugin : IDalamudPlugin
         this.windows.Draw();
     }
 }
+
+
 
 
 

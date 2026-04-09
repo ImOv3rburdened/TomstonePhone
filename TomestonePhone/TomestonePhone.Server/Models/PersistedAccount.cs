@@ -18,6 +18,10 @@ public sealed class PersistedAccount
 
     public string Status { get; set; } = "Active";
 
+    public string PresenceStatus { get; set; } = "Available";
+
+    public bool IsPaidMember { get; set; }
+
     public bool NotificationsMuted { get; set; }
 
     public string AcceptedLegalTermsVersion { get; set; } = string.Empty;
@@ -30,6 +34,8 @@ public sealed class PersistedAccount
 
     public HashSet<string> KnownIpAddresses { get; set; } = [];
 
+    public DateTimeOffset? LastHeartbeatAtUtc { get; set; }
+
     public HashSet<Guid> BlockedAccountIds { get; set; } = [];
 
     public PersistedGameIdentity? LastKnownGameIdentity { get; set; }
@@ -40,3 +46,5 @@ public sealed class PersistedAccount
 
     public Dictionary<Guid, PersistedContactPreference> ContactPreferences { get; set; } = [];
 }
+
+

@@ -12,6 +12,8 @@ public sealed class PersistedAppState
 
     public List<PersistedCall> Calls { get; set; } = [];
 
+    public List<PersistedActiveCallSession> ActiveCallSessions { get; set; } = [];
+
     public List<PersistedFriendRequest> FriendRequests { get; set; } = [];
 
     public List<PersistedFriendship> Friendships { get; set; } = [];
@@ -28,3 +30,4 @@ public sealed class PersistedAppState
 
     public PersistedServerAnnouncement? ActiveAnnouncement { get; set; }
 }
+
