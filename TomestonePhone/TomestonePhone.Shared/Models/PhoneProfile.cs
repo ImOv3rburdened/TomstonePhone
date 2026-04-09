@@ -7,9 +7,11 @@ public sealed record PhoneProfile(
     string PhoneNumber,
     AccountRole Role,
     AccountStatus Status,
+    PhonePresenceStatus PresenceStatus,
     bool NotificationsMuted,
     string AcceptedLegalTermsVersion,
     string AcceptedPrivacyPolicyVersion,
     GameIdentityRecord? LastKnownGameIdentity,
     WallpaperLayout? Wallpaper,
     UserAvatarLayout? Avatar);
+

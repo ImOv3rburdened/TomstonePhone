@@ -37,6 +37,7 @@ public static class SeedData
             PhoneNumber = state.NextPhoneNumber.ToString("0000000000"),
             Role = "Owner",
             Status = "Active",
+            PresenceStatus = "Available",
             AcceptedLegalTermsVersion = "bootstrap",
             AcceptedLegalTermsAtUtc = DateTimeOffset.UtcNow,
             AcceptedPrivacyPolicyVersion = "bootstrap",
@@ -64,3 +65,4 @@ public static class SeedData
         return state;
     }
 }
+

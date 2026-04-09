@@ -6,6 +6,7 @@ namespace TomestonePhone.Server.Services;
 
 public sealed class AccountService : IAccountService
 {
+    private static readonly TimeSpan OnlineWindow = TimeSpan.FromSeconds(75);
     private readonly IPhoneRepository repository;
 
     public AccountService(IPhoneRepository repository)
@@ -32,6 +33,21 @@ public sealed class AccountService : IAccountService
         return this.repository.ReadAsync(state => state.IpBans.Any(item => item.IpAddress == ipAddress), cancellationToken);
     }
 
+    public Task<bool> HeartbeatAsync(Guid accountId, CancellationToken cancellationToken = default)
+    {
+        return this.repository.WriteAsync(state =>
+        {
+            var account = state.Accounts.SingleOrDefault(item => item.Id == accountId);
+            if (account is null)
+            {
+                return false;
+            }
+
+            account.LastHeartbeatAtUtc = DateTimeOffset.UtcNow;
+            return true;
+        }, cancellationToken);
+    }
+
     public Task<LoginResponse?> LoginAsync(string username, string password, string ipAddress, CancellationToken cancellationToken = default)
     {
         return this.repository.WriteAsync(state =>
@@ -47,7 +63,7 @@ public sealed class AccountService : IAccountService
                 return null;
             }
 
-            if (account.Status == nameof(AccountStatus.Banned))
+            if (account.Status == nameof(AccountStatus.Banned) || account.Status == nameof(AccountStatus.Inactive))
             {
                 return null;
             }
@@ -130,6 +146,15 @@ public sealed class AccountService : IAccountService
         }, cancellationToken);
     }
 
+    public Task<PhoneProfile> UpdatePresenceStatusAsync(Guid accountId, UpdatePresenceStatusRequest request, CancellationToken cancellationToken = default)
+    {
+        return this.repository.WriteAsync(state =>
+        {
+            var account = state.Accounts.Single(item => item.Id == accountId);
+            account.PresenceStatus = request.PresenceStatus.ToString();
+            return MapProfile(account);
+        }, cancellationToken);
+    }
     public Task<bool> ChangePasswordAsync(Guid accountId, PasswordResetSelfRequest request, CancellationToken cancellationToken = default)
     {
         return this.repository.WriteAsync(state =>
@@ -148,6 +173,48 @@ public sealed class AccountService : IAccountService
             var salt = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
             account.PasswordSalt = salt;
             account.PasswordHash = PasswordHasher.Hash(request.NewPassword, salt);
+            return true;
+        }, cancellationToken);
+    }
+    public Task<bool> DeleteOwnAccountAsync(Guid accountId, DeleteAccountRequest request, CancellationToken cancellationToken = default)
+    {
+        return this.repository.WriteAsync(state =>
+        {
+            var account = state.Accounts.SingleOrDefault(item => item.Id == accountId);
+            if (account is null)
+            {
+                return false;
+            }
+
+            var role = Enum.TryParse<AccountRole>(account.Role, out var parsedRole) ? parsedRole : AccountRole.User;
+            if (role is AccountRole.Owner or AccountRole.Admin or AccountRole.Moderator)
+            {
+                return false;
+            }
+
+            if (!PasswordHasher.Verify(request.Password, account.PasswordSalt, account.PasswordHash))
+            {
+                return false;
+            }
+
+            account.Status = nameof(AccountStatus.Inactive);
+            account.PresenceStatus = nameof(PhonePresenceStatus.DoNotDisturb);
+            account.NotificationsMuted = true;
+            account.LastKnownGameIdentity = null;
+            account.LastHeartbeatAtUtc = null;
+            account.KnownIpAddresses.Clear();
+            state.Sessions.RemoveAll(item => item.AccountId == account.Id);
+
+            state.AuditLogs.Add(new PersistedAuditLog
+            {
+                Id = Guid.NewGuid(),
+                ActorAccountId = account.Id,
+                ActorDisplayName = account.DisplayName,
+                EventType = "AccountDeleted",
+                Summary = $"Account {account.Username} was permanently deactivated by the user.",
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+            });
+
             return true;
         }, cancellationToken);
     }
@@ -195,7 +262,7 @@ public sealed class AccountService : IAccountService
                     item.Id,
                     Enum.TryParse<ReportCategory>(item.Category, out var category) ? category : ReportCategory.Message,
                     item.ReporterAccountId,
-                    state.Accounts.SingleOrDefault(account => account.Id == item.ReporterAccountId)?.DisplayName ?? "Unknown",
+                    AccountLabelFormatter.GetDisplayName(state.Accounts.SingleOrDefault(account => account.Id == item.ReporterAccountId)),
                     item.TargetAccountId,
                     item.TargetConversationId,
                     item.TargetMessageId,
@@ -208,7 +275,7 @@ public sealed class AccountService : IAccountService
                 state.SupportTickets.OrderByDescending(item => item.CreatedAtUtc).Select(item =>
                 {
                     var owner = state.Accounts.Single(account => account.Id == item.AccountId);
-                    return new SupportTicketRecord(item.Id, item.ConversationId, item.AccountId, owner.DisplayName, item.Subject, item.Body, Enum.TryParse<SupportTicketStatus>(item.Status, out var ticketStatus) ? ticketStatus : SupportTicketStatus.Open, item.CreatedAtUtc, item.ClosedAtUtc, item.ClosedByAccountId, item.IsModerationCase);
+                    return new SupportTicketRecord(item.Id, item.ConversationId, item.AccountId, AccountLabelFormatter.GetDisplayName(owner), item.Subject, item.Body, Enum.TryParse<SupportTicketStatus>(item.Status, out var ticketStatus) ? ticketStatus : SupportTicketStatus.Open, item.CreatedAtUtc, item.ClosedAtUtc, item.ClosedByAccountId, item.IsModerationCase);
                 }).ToList(),
                 MapAnnouncement(state.ActiveAnnouncement));
         }, cancellationToken);
@@ -385,6 +452,7 @@ public sealed class AccountService : IAccountService
 
     private static AdminAccountSummary MapAdminSummary(PersistedAccount account)
     {
+        var lastSeenAtUtc = account.LastHeartbeatAtUtc;
         return new AdminAccountSummary(
             account.Id,
             account.Username,
@@ -392,7 +460,9 @@ public sealed class AccountService : IAccountService
             account.PhoneNumber,
             Enum.TryParse<AccountRole>(account.Role, out var role) ? role : AccountRole.User,
             Enum.TryParse<AccountStatus>(account.Status, out var status) ? status : AccountStatus.Active,
-            account.KnownIpAddresses.OrderBy(item => item).ToList());
+            account.KnownIpAddresses.OrderBy(item => item).ToList(),
+            lastSeenAtUtc is not null && DateTimeOffset.UtcNow - lastSeenAtUtc.Value <= OnlineWindow,
+            lastSeenAtUtc);
     }
 
     private static ServerAnnouncementRecord? MapAnnouncement(PersistedServerAnnouncement? announcement)
@@ -406,6 +476,7 @@ public sealed class AccountService : IAccountService
     {
         var role = Enum.TryParse<AccountRole>(account.Role, out var parsedRole) ? parsedRole : AccountRole.User;
         var status = Enum.TryParse<AccountStatus>(account.Status, out var parsedStatus) ? parsedStatus : AccountStatus.Active;
+        var presence = Enum.TryParse<PhonePresenceStatus>(account.PresenceStatus, out var parsedPresence) ? parsedPresence : PhonePresenceStatus.Available;
 
         return new PhoneProfile(
             account.Id,
@@ -414,6 +485,7 @@ public sealed class AccountService : IAccountService
             account.PhoneNumber,
             role,
             status,
+            presence,
             account.NotificationsMuted,
             account.AcceptedLegalTermsVersion,
             account.AcceptedPrivacyPolicyVersion,
@@ -428,3 +500,4 @@ public sealed class AccountService : IAccountService
                 : new UserAvatarLayout(account.Avatar.RelativePath, account.Avatar.Zoom, account.Avatar.OffsetX, account.Avatar.OffsetY, account.Avatar.ViewportSize, account.Avatar.UpdatedAtUtc));
     }
 }
+

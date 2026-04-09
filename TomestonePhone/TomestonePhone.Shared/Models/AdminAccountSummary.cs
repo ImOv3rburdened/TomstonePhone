@@ -7,4 +7,6 @@ public sealed record AdminAccountSummary(
     string PhoneNumber,
     AccountRole Role,
     AccountStatus Status,
-    IReadOnlyList<string> KnownIpAddresses);
+    IReadOnlyList<string> KnownIpAddresses,
+    bool IsOnline,
+    DateTimeOffset? LastSeenAtUtc);

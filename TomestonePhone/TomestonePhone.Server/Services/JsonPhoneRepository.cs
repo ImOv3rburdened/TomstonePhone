@@ -7,6 +7,7 @@ public sealed class JsonPhoneRepository : IPhoneRepository
 {
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly string statePath;
+    private readonly string backupRoot;
     private readonly BootstrapOwnerOptions bootstrapOwner;
     private readonly JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -19,6 +20,8 @@ public sealed class JsonPhoneRepository : IPhoneRepository
         var dataRoot = Path.Combine(environment.ContentRootPath, "AppData");
         Directory.CreateDirectory(dataRoot);
         this.statePath = Path.Combine(dataRoot, "state.json");
+        this.backupRoot = Path.Combine(dataRoot, "MigrationBackups");
+        Directory.CreateDirectory(this.backupRoot);
         this.bootstrapOwner = bootstrapOwner.Value;
     }
 
@@ -89,34 +92,89 @@ public sealed class JsonPhoneRepository : IPhoneRepository
 
     private async Task ApplyPendingMigrationsAsync(CancellationToken cancellationToken)
     {
-        var state = await this.LoadStateAsync(cancellationToken);
-        if (!AppStateMigrator.Migrate(state))
+        var payload = await this.LoadStatePayloadAsync(cancellationToken);
+        var state = this.DeserializeState(payload);
+        while (AppStateMigrator.TryMigrateNext(state, out var fromVersion, out var toVersion))
         {
-            return;
+            var backupPath = await this.CreateMigrationBackupAsync(fromVersion, toVersion, payload, cancellationToken);
+            try
+            {
+                var migratedPayload = JsonSerializer.Serialize(state, this.jsonOptions);
+                await this.SaveStatePayloadAsync(migratedPayload, cancellationToken);
+                payload = migratedPayload;
+                await this.MarkMigrationBackupCompletedAsync(backupPath, fromVersion, toVersion, null, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                await this.TryRestoreStatePayloadAsync(payload, cancellationToken);
+                await this.MarkMigrationBackupCompletedAsync(backupPath, fromVersion, toVersion, ex.Message, cancellationToken);
+                throw new InvalidOperationException($"Migration {fromVersion} -> {toVersion} failed. Restore attempted from backup.", ex);
+            }
         }
-
-        await this.SaveStateAsync(state, cancellationToken);
     }
 
     private async Task<PersistedAppState> LoadStateAsync(CancellationToken cancellationToken)
     {
+        var payload = await this.LoadStatePayloadAsync(cancellationToken);
+        return this.DeserializeState(payload);
+    }
+
+    private async Task<string> LoadStatePayloadAsync(CancellationToken cancellationToken)
+    {
         if (!File.Exists(this.statePath))
         {
             var state = SeedData.Create(this.bootstrapOwner);
-            await this.SaveStateAsync(state, cancellationToken);
-            return state;
+            var payload = JsonSerializer.Serialize(state, this.jsonOptions);
+            await this.SaveStatePayloadAsync(payload, cancellationToken);
+            return payload;
         }
 
-        await using var stream = File.OpenRead(this.statePath);
-        var stateFromDisk = await JsonSerializer.DeserializeAsync<PersistedAppState>(stream, this.jsonOptions, cancellationToken);
-        return stateFromDisk ?? SeedData.Create(this.bootstrapOwner);
+        return await File.ReadAllTextAsync(this.statePath, cancellationToken);
+    }
+
+    private PersistedAppState DeserializeState(string payload)
+    {
+        return JsonSerializer.Deserialize<PersistedAppState>(payload, this.jsonOptions) ?? SeedData.Create(this.bootstrapOwner);
     }
 
     private async Task SaveStateAsync(PersistedAppState state, CancellationToken cancellationToken)
     {
-        await using var stream = File.Create(this.statePath);
-        await JsonSerializer.SerializeAsync(stream, state, this.jsonOptions, cancellationToken);
+        var payload = JsonSerializer.Serialize(state, this.jsonOptions);
+        await this.SaveStatePayloadAsync(payload, cancellationToken);
+    }
+
+    private async Task SaveStatePayloadAsync(string payload, CancellationToken cancellationToken)
+    {
+        await File.WriteAllTextAsync(this.statePath, payload, cancellationToken);
+    }
+
+    private async Task<string> CreateMigrationBackupAsync(int fromVersion, int toVersion, string payload, CancellationToken cancellationToken)
+    {
+        var fileName = $"state.v{fromVersion:D3}-to-v{toVersion:D3}.{DateTime.UtcNow:yyyyMMddHHmmssfff}.json";
+        var path = Path.Combine(this.backupRoot, fileName);
+        await File.WriteAllTextAsync(path, payload, cancellationToken);
+        return path;
+    }
+
+    private Task MarkMigrationBackupCompletedAsync(string backupPath, int fromVersion, int toVersion, string? failureMessage, CancellationToken cancellationToken)
+    {
+        var markerPath = backupPath + ".status.txt";
+        var status = failureMessage is null
+            ? $"Applied migration {fromVersion} -> {toVersion} at {DateTime.UtcNow:O}"
+            : $"Failed migration {fromVersion} -> {toVersion} at {DateTime.UtcNow:O}{Environment.NewLine}{failureMessage}";
+        return File.WriteAllTextAsync(markerPath, status, cancellationToken);
+    }
+
+    private async Task TryRestoreStatePayloadAsync(string payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await this.SaveStatePayloadAsync(payload, cancellationToken);
+        }
+        catch
+        {
+            // Leave the original failure as the primary error and rely on the backup file for manual retry/recovery.
+        }
     }
 }
-
 

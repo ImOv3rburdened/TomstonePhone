@@ -19,11 +19,14 @@ public sealed class Service
 
     public required IClientState ClientState { get; init; }
 
+    public required IPlayerState PlayerState { get; init; }
+
     public required IObjectTable ObjectTable { get; init; }
 
     public required IFramework Framework { get; init; }
 
     public required WindowSystem Windows { get; init; }
 }
+
 
 

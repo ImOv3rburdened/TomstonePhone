@@ -15,6 +15,9 @@ builder.Services.Configure<FormOptions>(options =>
 builder.Services.Configure<CloudflareModerationOptions>(builder.Configuration.GetSection("CloudflareModeration"));
 builder.Services.Configure<BootstrapOwnerOptions>(builder.Configuration.GetSection("BootstrapOwner"));
 builder.Services.Configure<MariaDbOptions>(builder.Configuration.GetSection("MariaDb"));
+builder.Services.Configure<VoiceOptions>(builder.Configuration.GetSection("Voice"));
+builder.Services.Configure<CallPolicyOptions>(builder.Configuration.GetSection("CallPolicy"));
+builder.Services.Configure<GroupConversationPolicyOptions>(builder.Configuration.GetSection("GroupConversationPolicy"));
 builder.Services.AddSingleton<IPhoneRepository, MariaDbPhoneRepository>();
 builder.Services.AddSingleton<IAccountService, AccountService>();
 builder.Services.AddSingleton<IPhoneDirectoryService, PhoneDirectoryService>();
@@ -66,6 +69,8 @@ app.Use(async (context, next) =>
         return;
     }
 
+    var recommendedVersion = builder.Configuration["ClientVersionPolicy:RecommendedVersion"] ?? string.Empty;
+    var recommendedMessage = builder.Configuration["ClientVersionPolicy:RecommendedMessage"] ?? "A newer TomestonePhone version is available. Please update soon because older versions may stop working.";
     var clientVersion = context.Request.Headers["X-TomestonePhone-Version"].ToString();
     if (IsClientVersionAllowed(clientVersion, minimumVersion))
     {
@@ -79,19 +84,19 @@ app.Use(async (context, next) =>
     {
         error = updateMessage,
         minimumVersion,
+        recommendedVersion,
         currentVersion = clientVersion,
         updateMessage,
+        recommendedMessage,
     });
 });
-app.UseDefaultFiles();
-app.UseStaticFiles();
-
-app.MapGet("/health", () => Results.Ok(new { status = "ok", timeUtc = DateTimeOffset.UtcNow }));
 app.MapGet("/api/client/version-policy", (IConfiguration configuration) =>
 {
     var minimumVersion = configuration["ClientVersionPolicy:MinimumVersion"] ?? string.Empty;
+    var recommendedVersion = configuration["ClientVersionPolicy:RecommendedVersion"] ?? string.Empty;
     var updateMessage = configuration["ClientVersionPolicy:UpdateMessage"] ?? "Please update TomestonePhone to the latest version before using the app.";
-    return Results.Ok(new { minimumVersion, updateMessage });
+    var recommendedMessage = configuration["ClientVersionPolicy:RecommendedMessage"] ?? "A newer TomestonePhone version is available. Please update soon because older versions may stop working.";
+    return Results.Ok(new { minimumVersion, recommendedVersion, updateMessage, recommendedMessage });
 });
 
 app.MapPost("/api/auth/register", async (HttpContext context, RegisterRequest request, IAccountService accounts, CancellationToken cancellationToken) =>
@@ -139,6 +144,7 @@ app.MapGet("/api/phone/me", async (HttpContext context, IAccountService accounts
         await directory.GetContactsAsync(accountId.Value, cancellationToken),
         await directory.GetBlockedContactsAsync(accountId.Value, cancellationToken),
         await chat.GetConversationsAsync(accountId.Value, cancellationToken),
+        await calls.GetActiveCallsAsync(accountId.Value, cancellationToken),
         await calls.GetRecentCallsAsync(accountId.Value, cancellationToken),
         await friends.GetRequestsAsync(accountId.Value, cancellationToken),
         await reports.GetVisibleReportsAsync(accountId.Value, cancellationToken),
@@ -231,6 +237,18 @@ app.MapPost("/api/account/password", async (HttpContext context, PasswordResetSe
     return Results.Ok(new { success = await accounts.ChangePasswordAsync(accountId.Value, request, cancellationToken) });
 });
 
+app.MapPost("/api/account/delete", async (HttpContext context, DeleteAccountRequest request, IAccountService accounts, CancellationToken cancellationToken) =>
+{
+    var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
+    if (accountId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    return Results.Ok(new { success = await accounts.DeleteOwnAccountAsync(accountId.Value, request, cancellationToken) });
+});
+
+
 app.MapPost("/api/account/notifications", async (HttpContext context, UpdateNotificationSettingsRequest request, IAccountService accounts, CancellationToken cancellationToken) =>
 {
     var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
@@ -240,6 +258,28 @@ app.MapPost("/api/account/notifications", async (HttpContext context, UpdateNoti
     }
 
     return Results.Ok(await accounts.UpdateNotificationSettingsAsync(accountId.Value, request, cancellationToken));
+});
+
+app.MapPost("/api/account/presence", async (HttpContext context, UpdatePresenceStatusRequest request, IAccountService accounts, CancellationToken cancellationToken) =>
+{
+    var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
+    if (accountId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    return Results.Ok(await accounts.UpdatePresenceStatusAsync(accountId.Value, request, cancellationToken));
+});
+
+app.MapPost("/api/account/heartbeat", async (HttpContext context, IAccountService accounts, CancellationToken cancellationToken) =>
+{
+    var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
+    if (accountId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    return Results.Ok(new { success = await accounts.HeartbeatAsync(accountId.Value, cancellationToken) });
 });
 
 app.MapGet("/api/conversations/{conversationId:guid}/messages", async (HttpContext context, Guid conversationId, IAccountService accounts, IChatService chat, CancellationToken cancellationToken) =>
@@ -349,6 +389,57 @@ app.MapPost("/api/calls/start", async (HttpContext context, StartCallRequest req
     return Results.Ok(await calls.StartCallAsync(accountId.Value, request, cancellationToken));
 });
 
+app.MapGet("/api/calls/active", async (HttpContext context, IAccountService accounts, ICallService calls, CancellationToken cancellationToken) =>
+{
+    var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
+    if (accountId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    return Results.Ok(await calls.GetActiveCallsAsync(accountId.Value, cancellationToken));
+});
+
+app.MapPost("/api/calls/session/start", async (HttpContext context, StartCallRequest request, IAccountService accounts, ICallService calls, CancellationToken cancellationToken) =>
+{
+    var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
+    if (accountId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    if (!await EnsureInteractiveAccessAsync(accountId.Value, accounts, cancellationToken))
+    {
+        return Results.StatusCode(StatusCodes.Status423Locked);
+    }
+
+    var session = await calls.StartOrJoinActiveCallAsync(accountId.Value, request, cancellationToken);
+    return session is null ? Results.NotFound() : Results.Ok(session);
+});
+
+app.MapPost("/api/calls/session/end", async (HttpContext context, EndActiveCallRequest request, IAccountService accounts, ICallService calls, CancellationToken cancellationToken) =>
+{
+    var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
+    if (accountId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var result = await calls.EndActiveCallAsync(accountId.Value, request, cancellationToken);
+    return result is null ? Results.NotFound() : Results.Ok(result);
+});
+
+app.MapPost("/api/calls/missed/acknowledge", async (HttpContext context, IAccountService accounts, ICallService calls, CancellationToken cancellationToken) =>
+{
+    var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
+    if (accountId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var count = await calls.AcknowledgeMissedCallsAsync(accountId.Value, cancellationToken);
+    return Results.Ok(new { success = true, count });
+});
 app.MapPost("/api/calls/complete", async (HttpContext context, CompleteCallRequest request, IAccountService accounts, ICallService calls, CancellationToken cancellationToken) =>
 {
     var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
@@ -634,4 +725,11 @@ static bool IsClientVersionAllowed(string? clientVersion, string? minimumVersion
 
     return current >= minimum;
 }
+
+
+
+
+
+
+
 

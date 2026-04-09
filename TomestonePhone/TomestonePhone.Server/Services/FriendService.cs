@@ -32,7 +32,7 @@ public sealed class FriendService : IFriendService
 
             state.FriendRequests.Add(record);
             var sender = state.Accounts.Single(item => item.Id == senderAccountId);
-            return new FriendRequestRecord(record.Id, sender.DisplayName, sender.PhoneNumber, FriendRequestStatus.Pending);
+            return new FriendRequestRecord(record.Id, AccountLabelFormatter.GetDisplayName(sender), sender.PhoneNumber, FriendRequestStatus.Pending);
         }, cancellationToken);
     }
 
@@ -47,7 +47,7 @@ public sealed class FriendService : IFriendService
                     var sender = state.Accounts.SingleOrDefault(account => account.Id == item.SenderAccountId);
                     return new FriendRequestRecord(
                         item.Id,
-                        sender?.DisplayName ?? "Unknown",
+                        sender is null ? "Unknown" : AccountLabelFormatter.GetDisplayName(sender),
                         sender?.PhoneNumber ?? "0000000000",
                         Enum.TryParse<FriendRequestStatus>(item.Status, out var status) ? status : FriendRequestStatus.Pending);
                 })
@@ -85,13 +85,13 @@ public sealed class FriendService : IFriendService
 
                 recipient.ContactPreferences[sender.Id] = new PersistedContactPreference
                 {
-                    DisplayName = sender.DisplayName,
+                    DisplayName = AccountLabelFormatter.GetDisplayName(sender),
                     Note = string.Empty,
                 };
 
                 sender.ContactPreferences[recipient.Id] = new PersistedContactPreference
                 {
-                    DisplayName = recipient.DisplayName,
+                    DisplayName = AccountLabelFormatter.GetDisplayName(recipient),
                     Note = string.Empty,
                 };
             }

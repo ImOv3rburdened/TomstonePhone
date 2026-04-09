@@ -32,13 +32,13 @@ public sealed class PhoneState
 
     public int UnreadConversationCount => this.Conversations.Sum(item => item.UnreadCount);
 
-    public int MissedCallCount => this.RecentCalls.Count(item => item.Missed);
+    public int MissedCallCount => this.RecentCalls.Count(item => item.Missed && !item.Acknowledged);
 
     public static PhoneState CreateSeeded()
     {
         return new PhoneState
         {
-            CurrentProfile = new PhoneProfile(Guid.Empty, "Guest", "Tomestone", string.Empty, AccountRole.User, AccountStatus.Active, false, string.Empty, string.Empty, null, null, null),
+            CurrentProfile = new PhoneProfile(Guid.Empty, "Guest", "Tomestone", string.Empty, AccountRole.User, AccountStatus.Active, PhonePresenceStatus.Available, false, string.Empty, string.Empty, null, null, null),
             Contacts = [],
             BlockedContacts = [],
             Friends = [],
@@ -69,3 +69,4 @@ public sealed class PhoneState
         this.ActiveAnnouncement = snapshot.ActiveAnnouncement;
     }
 }
+
