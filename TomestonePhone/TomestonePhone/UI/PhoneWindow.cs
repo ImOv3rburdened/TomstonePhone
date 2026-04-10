@@ -568,56 +568,83 @@ public sealed class PhoneWindow : Window
 
     private void DrawHomeScreen()
     {
-        var availableWidth = ImGui.GetContentRegionAvail().X;
+        var totalWidth = ImGui.GetContentRegionAvail().X;
+        var totalHeight = ImGui.GetContentRegionAvail().Y;
         var columns = 3;
         var spacing = this.Scale(12f);
-        var horizontalInset = this.Scale(4f);
-        var cell = (availableWidth - horizontalInset * 2f - spacing * (columns - 1)) / columns;
-        var baseX = ImGui.GetCursorPosX();
-        var gridApps = new List<(string Label, string Glyph, PhoneTab Tab, int Badge, Vector4 Top, Vector4 Bottom)>
+        var sideInset = this.Scale(6f);
+        var topInset = this.Scale(10f);
+        var bottomInset = this.Scale(8f);
+        var dockHeight = this.Scale(132f);
+        var gridApps = new List<(string Label, string Glyph, PhoneTab Tab, int Badge)>
         {
-            ("Friends", "F", PhoneTab.Friends, this.state.FriendRequests.Count(item => item.Status == FriendRequestStatus.Pending), new Vector4(0.51f, 0.67f, 1f, 1f), new Vector4(0.27f, 0.44f, 0.85f, 1f)),
-            ("Settings", "S", PhoneTab.Settings, 0, new Vector4(0.76f, 0.79f, 0.86f, 1f), new Vector4(0.47f, 0.52f, 0.63f, 1f)),
-            ("Legal", "L", PhoneTab.Legal, 0, new Vector4(0.93f, 0.85f, 0.62f, 1f), new Vector4(0.74f, 0.61f, 0.29f, 1f)),
-            ("Privacy", "P", PhoneTab.Privacy, 0, new Vector4(0.71f, 0.62f, 0.98f, 1f), new Vector4(0.43f, 0.34f, 0.8f, 1f)),
-            ("Support", "?", PhoneTab.Support, 0, new Vector4(0.36f, 0.87f, 0.88f, 1f), new Vector4(0.2f, 0.59f, 0.64f, 1f))
+            ("Friends", "F", PhoneTab.Friends, this.state.FriendRequests.Count(item => item.Status == FriendRequestStatus.Pending)),
+            ("Settings", "S", PhoneTab.Settings, 0),
+            ("Legal", "L", PhoneTab.Legal, 0),
+            ("Privacy", "P", PhoneTab.Privacy, 0),
+            ("Support", "?", PhoneTab.Support, 0)
         };
 
         if (this.state.CurrentProfile.Role is AccountRole.Owner or AccountRole.Admin or AccountRole.Moderator)
         {
-            gridApps.Add(("Staff", "A", PhoneTab.Staff, this.state.VisibleReports.Count(item => item.Status == ReportStatus.Open), new Vector4(0.98f, 0.46f, 0.46f, 1f), new Vector4(0.75f, 0.24f, 0.28f, 1f)));
+            gridApps.Add(("Staff", "A", PhoneTab.Staff, this.state.VisibleReports.Count(item => item.Status == ReportStatus.Open)));
         }
 
+        var rows = Math.Max(1, (int)Math.Ceiling(gridApps.Count / (float)columns));
+        var usableHeight = Math.Max(this.Scale(180f), totalHeight - dockHeight - topInset - bottomInset - spacing);
+        var cellWidth = (totalWidth - sideInset * 2f - spacing * (columns - 1)) / columns;
+        var cellHeight = (usableHeight - spacing * Math.Max(0, rows - 1)) / rows;
+        var cell = MathF.Min(cellWidth, cellHeight);
+        var gridWidth = cell * columns + spacing * (columns - 1);
+        var gridStartX = ImGui.GetCursorPosX() + Math.Max(0f, (totalWidth - gridWidth) * 0.5f);
+        var totalGridHeight = rows * cell + Math.Max(0, rows - 1) * spacing;
+
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + topInset);
         for (var index = 0; index < gridApps.Count; index++)
         {
             if (index % columns == 0)
             {
-                ImGui.SetCursorPosX(baseX + horizontalInset);
+                ImGui.SetCursorPosX(gridStartX);
             }
 
             var app = gridApps[index];
-            this.DrawAppIcon(app.Label, app.Glyph, app.Tab, app.Badge, cell, app.Top, app.Bottom);
+            this.DrawAppIcon(app.Label, app.Glyph, app.Tab, app.Badge, cell, Vector4.Zero, Vector4.Zero);
             if (index % columns < columns - 1 && index < gridApps.Count - 1)
             {
                 ImGui.SameLine(0f, spacing);
             }
         }
 
-        var rows = Math.Max(1, (int)Math.Ceiling(gridApps.Count / (float)columns));
-        var usedHeight = rows * cell + Math.Max(0, rows - 1) * spacing;
-        var dockHeight = Math.Max(this.Scale(92f), cell + this.Scale(12f));
-        var remainingHeight = ImGui.GetContentRegionAvail().Y - dockHeight;
-        if (remainingHeight > usedHeight)
+        var spacerHeight = Math.Max(0f, totalHeight - topInset - totalGridHeight - dockHeight - bottomInset);
+        if (spacerHeight > 0f)
         {
-            ImGui.Dummy(new Vector2(0f, remainingHeight - usedHeight));
+            ImGui.Dummy(new Vector2(0f, spacerHeight));
         }
 
         this.DrawDock();
     }
+
+    private string GetAppIconPath(PhoneTab tab)
+    {
+        return tab switch
+        {
+            PhoneTab.Messages => this.configuration.MessagesIconPath,
+            PhoneTab.Calls => this.configuration.CallsIconPath,
+            PhoneTab.Contacts => this.configuration.ContactsIconPath,
+            PhoneTab.Friends => this.configuration.FriendsIconPath,
+            PhoneTab.Settings => this.configuration.SettingsIconPath,
+            PhoneTab.Legal => this.configuration.LegalIconPath,
+            PhoneTab.Privacy => this.configuration.PrivacyIconPath,
+            PhoneTab.Support => this.configuration.SupportIconPath,
+            PhoneTab.Staff => this.configuration.StaffIconPath,
+            _ => string.Empty,
+        };
+    }
+
     private void DrawAppIcon(string label, string glyph, PhoneTab tab, int badgeCount, float width, Vector4 topColor, Vector4 bottomColor)
     {
         var cardHeight = width;
-        using var group = ImRaii.Child($"app-{label}", new Vector2(width, cardHeight), false);
+        using var group = ImRaii.Child($"app-{label}", new Vector2(width, cardHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
         if (!group.Success)
         {
             return;
@@ -625,22 +652,34 @@ public sealed class PhoneWindow : Window
 
         var draw = ImGui.GetWindowDrawList();
         var pos = ImGui.GetCursorScreenPos();
-        var iconSize = Math.Min(this.Scale(72f), width - this.Scale(28f));
-        var iconMin = pos + new Vector2((width - iconSize) * 0.5f, this.Scale(12f));
+        var iconSize = Math.Min(width * 0.5f, this.Scale(84f));
+        var iconTop = this.Scale(12f);
+        var labelBottomPadding = this.Scale(14f);
+        var labelSize = ImGui.CalcTextSize(label);
+        var iconMin = pos + new Vector2((width - iconSize) * 0.5f, iconTop);
         var iconMax = iconMin + new Vector2(iconSize, iconSize);
-        var cardMin = pos + new Vector2(this.Scale(4f), this.Scale(2f));
-        var cardMax = pos + new Vector2(width - this.Scale(4f), cardHeight - this.Scale(6f));
-        draw.AddRectFilled(cardMin, cardMax, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.045f)), this.Scale(26f));
-        draw.AddRect(cardMin, cardMax, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.055f)), this.Scale(26f));
-        draw.AddRectFilledMultiColor(iconMin, iconMax, ImGui.GetColorU32(topColor), ImGui.GetColorU32(topColor), ImGui.GetColorU32(bottomColor), ImGui.GetColorU32(bottomColor));
-        draw.AddRect(iconMin, iconMax, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.14f)), this.Scale(22f), ImDrawFlags.None, 1.2f);
-        var glyphSize = ImGui.CalcTextSize(glyph);
-        draw.AddText(new Vector2(iconMin.X + (iconSize - glyphSize.X) * 0.5f, iconMin.Y + (iconSize - glyphSize.Y) * 0.5f - this.Scale(1f)), ImGui.GetColorU32(Vector4.One), glyph);
+        var cardMin = pos + new Vector2(this.Scale(2f), this.Scale(2f));
+        var cardMax = pos + new Vector2(width - this.Scale(2f), cardHeight - this.Scale(4f));
+        draw.AddRectFilled(cardMin, cardMax, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.035f)), this.Scale(24f));
+        draw.AddRect(cardMin, cardMax, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.05f)), this.Scale(24f));
+
+        var iconTexture = this.appIconRenderer.TryGetIcon(this.GetAppIconPath(tab));
+        if (iconTexture is not null)
+        {
+            draw.AddImage(iconTexture.Handle, iconMin, iconMax);
+        }
+        else
+        {
+            draw.AddRectFilledMultiColor(iconMin, iconMax, ImGui.GetColorU32(topColor), ImGui.GetColorU32(topColor), ImGui.GetColorU32(bottomColor), ImGui.GetColorU32(bottomColor));
+            draw.AddRect(iconMin, iconMax, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.14f)), this.Scale(22f), ImDrawFlags.None, 1.2f);
+            var glyphSize = ImGui.CalcTextSize(glyph);
+            draw.AddText(new Vector2(iconMin.X + (iconSize - glyphSize.X) * 0.5f, iconMin.Y + (iconSize - glyphSize.Y) * 0.5f - this.Scale(1f)), ImGui.GetColorU32(Vector4.One), glyph);
+        }
 
         if (badgeCount > 0)
         {
-            var badgeCenter = new Vector2(iconMax.X - this.Scale(2f), iconMin.Y + this.Scale(6f));
-            draw.AddCircleFilled(badgeCenter, this.Scale(14f), ImGui.GetColorU32(new Vector4(0.9f, 0.3f, 0.25f, 1f)));
+            var badgeCenter = new Vector2(iconMax.X - this.Scale(4f), iconMin.Y + this.Scale(4f));
+            draw.AddCircleFilled(badgeCenter, this.Scale(13f), ImGui.GetColorU32(new Vector4(0.9f, 0.3f, 0.25f, 1f)));
             var badgeText = badgeCount > 99 ? "99+" : badgeCount.ToString();
             var badgeTextSize = ImGui.CalcTextSize(badgeText);
             draw.AddText(new Vector2(badgeCenter.X - badgeTextSize.X * 0.5f, badgeCenter.Y - badgeTextSize.Y * 0.5f), ImGui.GetColorU32(Vector4.One), badgeText);
@@ -652,8 +691,7 @@ public sealed class PhoneWindow : Window
             this.activeTab = tab;
         }
 
-        var labelSize = ImGui.CalcTextSize(label);
-        draw.AddText(new Vector2(pos.X + (width - labelSize.X) * 0.5f, pos.Y + cardHeight - this.Scale(28f)), ImGui.GetColorU32(Vector4.One), label);
+        draw.AddText(new Vector2(pos.X + (width - labelSize.X) * 0.5f, pos.Y + cardHeight - labelBottomPadding - labelSize.Y), ImGui.GetColorU32(Vector4.One), label);
     }
 
     private void DrawDock()
@@ -663,12 +701,10 @@ public sealed class PhoneWindow : Window
         var spacing = this.Scale(12f);
         var horizontalInset = this.Scale(4f);
         var cell = (width - horizontalInset * 2f - spacing * 2f) / 3f;
-        var dockHeight = Math.Max(this.Scale(92f), cell + this.Scale(12f));
+        var dockHeight = cell + this.Scale(12f);
         var draw = ImGui.GetWindowDrawList();
-        var fill = new Vector4(1f, 1f, 1f, 0.08f);
-        var border = new Vector4(1f, 1f, 1f, 0.11f);
-        draw.AddRectFilled(start, start + new Vector2(width, dockHeight), ImGui.GetColorU32(fill), this.Scale(30f));
-        draw.AddRect(start, start + new Vector2(width, dockHeight), ImGui.GetColorU32(border), this.Scale(30f));
+        draw.AddRectFilled(start, start + new Vector2(width, dockHeight), ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.065f)), this.Scale(30f));
+        draw.AddRect(start, start + new Vector2(width, dockHeight), ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.08f)), this.Scale(30f));
 
         ImGui.SetCursorScreenPos(start + new Vector2(horizontalInset, this.Scale(4f)));
         this.DrawAppIcon("Calls", "C", PhoneTab.Calls, this.state.MissedCallCount, cell, new Vector4(0.23f, 0.83f, 0.57f, 1f), new Vector4(0.12f, 0.56f, 0.37f, 1f));
@@ -677,11 +713,12 @@ public sealed class PhoneWindow : Window
         ImGui.SameLine(0f, spacing);
         this.DrawAppIcon("Messages", "M", PhoneTab.Messages, this.state.UnreadConversationCount, cell, new Vector4(0.28f, 0.6f, 0.98f, 1f), new Vector4(0.17f, 0.36f, 0.8f, 1f));
     }
+
     private void DrawMessages()
     {
         if (this.selectedConversationId is { } selectedId && this.selectedConversationMessages is not null)
         {
-            var detailHeight = this.selectedConversationDetail is null ? 0f : this.Scale(this.selectedConversationDetail.IsGroup || this.selectedConversationDetail.LinkedSupportTicketId is not null ? 112f : 86f);
+            var detailHeight = this.selectedConversationDetail is null ? 0f : this.Scale(this.selectedConversationDetail.LinkedSupportTicketId is not null ? 108f : this.selectedConversationDetail.IsGroup ? 72f : 58f);
             var composerHeight = this.Scale(92f);
             var threadHeight = Math.Max(this.Scale(180f), ImGui.GetContentRegionAvail().Y - detailHeight - composerHeight - this.Scale(8f));
 
