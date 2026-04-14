@@ -7,7 +7,16 @@ namespace TomestonePhone;
 
 public sealed class Configuration : IPluginConfiguration
 {
-    private static readonly string AssetRoot = Path.Combine(AppContext.BaseDirectory, "images");
+    private const string EmbeddedContactsIcon = "embedded://app-contacts.png";
+    private const string EmbeddedMessagesIcon = "embedded://app-messages.png";
+    private const string EmbeddedCallsIcon = "embedded://app-phone.png";
+    private const string EmbeddedFriendsIcon = "embedded://app-friends.png";
+    private const string EmbeddedSettingsIcon = "embedded://app-settings.png";
+    private const string EmbeddedLegalIcon = "embedded://app-legal.png";
+    private const string EmbeddedPrivacyIcon = "embedded://app-privacy.png";
+    private const string EmbeddedSupportIcon = "embedded://app-support.png";
+    private const string EmbeddedStaffIcon = "embedded://app-staff.png";
+    private const string EmbeddedAppIcon = "embedded://icon.png";
 
     public int Version { get; set; } = 1;
 
@@ -29,25 +38,25 @@ public sealed class Configuration : IPluginConfiguration
 
     public float BackgroundOffsetY { get; set; }
 
-    public string ContactsIconPath { get; set; } = "embedded://app-contacts.png";
+    public string ContactsIconPath { get; set; } = EmbeddedContactsIcon;
 
-    public string MessagesIconPath { get; set; } = "embedded://app-messages.png";
+    public string MessagesIconPath { get; set; } = EmbeddedMessagesIcon;
 
-    public string CallsIconPath { get; set; } = "embedded://app-phone.png";
+    public string CallsIconPath { get; set; } = EmbeddedCallsIcon;
 
-    public string FriendsIconPath { get; set; } = "embedded://app-friends.png";
+    public string FriendsIconPath { get; set; } = EmbeddedFriendsIcon;
 
-    public string SettingsIconPath { get; set; } = "embedded://app-settings.png";
+    public string SettingsIconPath { get; set; } = EmbeddedSettingsIcon;
 
-    public string LegalIconPath { get; set; } = "embedded://app-legal.png";
+    public string LegalIconPath { get; set; } = EmbeddedLegalIcon;
 
-    public string PrivacyIconPath { get; set; } = "embedded://app-privacy.png";
+    public string PrivacyIconPath { get; set; } = EmbeddedPrivacyIcon;
 
-    public string SupportIconPath { get; set; } = "embedded://app-support.png";
+    public string SupportIconPath { get; set; } = EmbeddedSupportIcon;
 
-    public string StaffIconPath { get; set; } = "embedded://app-staff.png";
+    public string StaffIconPath { get; set; } = EmbeddedStaffIcon;
 
-    public string AppIconPath { get; set; } = Path.Combine(AssetRoot, "tomestone-app-icon.png");
+    public string AppIconPath { get; set; } = EmbeddedAppIcon;
 
     public string AccentColorHex { get; set; } = "#D9B56D";
 
@@ -110,6 +119,20 @@ public sealed class Configuration : IPluginConfiguration
             .Replace("/8080", "/5050", StringComparison.OrdinalIgnoreCase);
     }
 
+    public void NormalizeAssetPaths()
+    {
+        this.ContactsIconPath = EmbeddedContactsIcon;
+        this.MessagesIconPath = EmbeddedMessagesIcon;
+        this.CallsIconPath = EmbeddedCallsIcon;
+        this.FriendsIconPath = EmbeddedFriendsIcon;
+        this.SettingsIconPath = EmbeddedSettingsIcon;
+        this.LegalIconPath = EmbeddedLegalIcon;
+        this.PrivacyIconPath = EmbeddedPrivacyIcon;
+        this.SupportIconPath = EmbeddedSupportIcon;
+        this.StaffIconPath = EmbeddedStaffIcon;
+        this.AppIconPath = EmbeddedAppIcon;
+    }
+
     public void StoreRememberedCredentials(string username, string password)
     {
         this.RememberedUsername = string.IsNullOrWhiteSpace(username) ? null : username.Trim();
@@ -155,5 +178,3 @@ public sealed class Configuration : IPluginConfiguration
         }
     }
 }
-
-

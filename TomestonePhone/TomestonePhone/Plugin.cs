@@ -33,6 +33,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         this.configuration = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         this.configuration.NormalizeServerBaseUrl();
+        this.configuration.NormalizeAssetPaths();
         pluginInterface.SavePluginConfig(this.configuration);
 
         this.service = new Service
@@ -139,6 +140,7 @@ public sealed class Plugin : IDalamudPlugin
         this.windows.Draw();
     }
 }
+
 
 
 

@@ -29,7 +29,7 @@ public sealed class AppIconRenderer : IDisposable
         }
 
         var state = this.cache.GetOrAdd(path, static _ => new IconState());
-        state.EnsureLoadStarted(() => this.LoadAsync(path, state));
+        state.EnsureLoadStarted(() => this.Load(path, state));
         return state.Status == IconLoadStatus.Ready ? state.Texture : null;
     }
 
@@ -61,18 +61,18 @@ public sealed class AppIconRenderer : IDisposable
         return path.StartsWith(EmbeddedPrefix, StringComparison.OrdinalIgnoreCase) || File.Exists(path);
     }
 
-    private async Task LoadAsync(string path, IconState state)
+    private void Load(string path, IconState state)
     {
         try
         {
-            var bytes = await this.LoadBytesAsync(path).ConfigureAwait(false);
+            var bytes = this.LoadBytes(path);
             if (bytes is null || bytes.Length == 0)
             {
                 state.SetFailed();
                 return;
             }
 
-            var wrap = await this.textureProvider.CreateFromImageAsync(bytes).ConfigureAwait(false);
+            var wrap = this.textureProvider.CreateFromImageAsync(bytes).GetAwaiter().GetResult();
             state.SetTexture(wrap);
         }
         catch
@@ -81,7 +81,7 @@ public sealed class AppIconRenderer : IDisposable
         }
     }
 
-    private async Task<byte[]?> LoadBytesAsync(string path)
+    private byte[]? LoadBytes(string path)
     {
         if (path.StartsWith(EmbeddedPrefix, StringComparison.OrdinalIgnoreCase))
         {
@@ -94,11 +94,11 @@ public sealed class AppIconRenderer : IDisposable
             }
 
             using var memory = new MemoryStream();
-            await stream.CopyToAsync(memory).ConfigureAwait(false);
+            stream.CopyTo(memory);
             return memory.ToArray();
         }
 
-        return await File.ReadAllBytesAsync(path).ConfigureAwait(false);
+        return File.ReadAllBytes(path);
     }
 
     private enum IconLoadStatus
@@ -116,11 +116,11 @@ public sealed class AppIconRenderer : IDisposable
 
         public IDalamudTextureWrap? Texture { get; private set; }
 
-        public void EnsureLoadStarted(Func<Task> load)
+        public void EnsureLoadStarted(Action load)
         {
             if (Interlocked.Exchange(ref this.loadStarted, 1) == 0)
             {
-                _ = Task.Run(load);
+                load();
             }
         }
 
@@ -142,3 +142,4 @@ public sealed class AppIconRenderer : IDisposable
         }
     }
 }
+
