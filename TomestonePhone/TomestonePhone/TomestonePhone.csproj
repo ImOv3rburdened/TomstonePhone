@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Version>0.1.9.0</Version>
+    <Version>0.1.9.1</Version>
     <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <RootNamespace>TomestonePhone</RootNamespace>
@@ -19,15 +19,45 @@
     <Content Include="TomestonePhone.json">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
-    <Content Include="..\..\images\*.svg">
-      <Link>images\%(Filename)%(Extension)</Link>
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    <Content Include="assets\**\*.*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <EmbeddedResource Include="..\..\images\app-*.png">
-      <LogicalName>TomestonePhone.EmbeddedIcons.%(Filename)%(Extension)</LogicalName>
+
+    <EmbeddedResource Include="assets\icons\Calls.png">
+      <LogicalName>TomestonePhone.EmbeddedIcons.app-phone.png</LogicalName>
     </EmbeddedResource>
-    <EmbeddedResource Include="..\..\images\icon.png">
+    <EmbeddedResource Include="assets\icons\Contacts.png">
+      <LogicalName>TomestonePhone.EmbeddedIcons.app-contacts.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="assets\icons\Friends.png">
+      <LogicalName>TomestonePhone.EmbeddedIcons.app-friends.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="assets\icons\Legal.png">
+      <LogicalName>TomestonePhone.EmbeddedIcons.app-legal.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="assets\icons\Messages.png">
+      <LogicalName>TomestonePhone.EmbeddedIcons.app-messages.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="assets\icons\Privacy.png">
+      <LogicalName>TomestonePhone.EmbeddedIcons.app-privacy.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="assets\icons\Settings.png">
+      <LogicalName>TomestonePhone.EmbeddedIcons.app-settings.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="assets\icons\Staff.png">
+      <LogicalName>TomestonePhone.EmbeddedIcons.app-staff.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="assets\icons\Support.png">
+      <LogicalName>TomestonePhone.EmbeddedIcons.app-support.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="assets\icons\App Icon.png">
       <LogicalName>TomestonePhone.EmbeddedIcons.icon.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="assets\splash\splash-screen-blank.png">
+      <LogicalName>TomestonePhone.EmbeddedIcons.splash-screen-blank.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="assets\splash\splash-screen-eorzea.png">
+      <LogicalName>TomestonePhone.EmbeddedIcons.splash-screen-eorzea.png</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 
