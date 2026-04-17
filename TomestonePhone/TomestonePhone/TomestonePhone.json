@@ -4,7 +4,7 @@
     "Punchline":  "A self-contained in-game tomestone phone.",
     "Description":  "Contacts, SMS, calls, group chat, and friend management through a styled tomestone UI.",
     "InternalName":  "TomestonePhone",
-    "AssemblyVersion":  "0.1.10.2",
+    "AssemblyVersion":  "0.1.10.3",
     "ApplicableVersion":  "any"
 }
 

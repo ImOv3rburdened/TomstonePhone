@@ -139,7 +139,7 @@ app.MapGet("/api/phone/me", async (HttpContext context, IAccountService accounts
                 {
                     var friendId = item.AccountAId == accountId.Value ? item.AccountBId : item.AccountAId;
                     var friend = state.Accounts.Single(account => account.Id == friendId);
-                    return new FriendshipRecord(item.Id, friendId, friend.DisplayName, friend.PhoneNumber, item.CreatedAtUtc);
+                    return new FriendshipRecord(item.Id, friendId, AccountLabelFormatter.GetDisplayName(friend), friend.PhoneNumber, item.CreatedAtUtc);
                 })
                 .ToList();
         }, cancellationToken),
@@ -335,7 +335,14 @@ app.MapPost("/api/conversations/direct", async (HttpContext context, StartDirect
         return Results.StatusCode(StatusCodes.Status423Locked);
     }
 
-    return Results.Ok(await chat.StartDirectConversationAsync(accountId.Value, request, cancellationToken));
+    try
+    {
+        return Results.Ok(await chat.StartDirectConversationAsync(accountId.Value, request, cancellationToken));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
 });
 
 app.MapPost("/api/messages", async (HttpContext context, SendMessageRequest request, IAccountService accounts, IChatService chat, IHubContext<PhoneHub> hub, CancellationToken cancellationToken) =>
@@ -752,6 +759,7 @@ static bool IsClientVersionAllowed(string? clientVersion, string? minimumVersion
 
     return current >= minimum;
 }
+
 
 
 
