@@ -24,7 +24,7 @@ public sealed class CallService : ICallService
             return state.Calls
                 .Where(call => this.CanAccessConversation(state, accountId, call.ConversationId))
                 .OrderByDescending(item => item.StartedUtc)
-                .Select(call => this.MapSummary(call, accountId))
+                .Select(call => this.MapSummary(state, call, accountId))
                 .ToList();
         }, cancellationToken);
     }
@@ -48,7 +48,7 @@ public sealed class CallService : ICallService
         {
             this.ExpireActiveSessions(state);
             var (_, call, _) = this.EnsureActiveSession(state, accountId, request);
-            return this.MapSummary(call, accountId);
+            return this.MapSummary(state, call, accountId);
         }, cancellationToken);
     }
 
@@ -90,7 +90,7 @@ public sealed class CallService : ICallService
                     {
                         call.DurationSeconds = Math.Max(call.DurationSeconds, (int)Math.Max(0, Math.Round((DateTimeOffset.UtcNow - session.StartedUtc).TotalSeconds)));
                     }
-                    return call is null ? null : this.MapSummary(call, accountId);
+                    return call is null ? null : this.MapSummary(state, call, accountId);
                 }
             }
 
@@ -111,7 +111,7 @@ public sealed class CallService : ICallService
             call.DurationSeconds = request.DurationSeconds;
             call.EndedUtc ??= call.StartedUtc.AddSeconds(Math.Max(0, request.DurationSeconds));
             call.Missed = request.Missed;
-            return this.MapSummary(call, accountId);
+            return this.MapSummary(state, call, accountId);
         }, cancellationToken);
     }
 
@@ -281,7 +281,7 @@ public sealed class CallService : ICallService
             this.AddSystemCallMessage(state, conversation, session.StartedByAccountId, ChatMessageKind.CallEnded, $"Call ended - {FormatDuration(call.DurationSeconds)}", call.Id, call.DurationSeconds);
         }
         state.ActiveCallSessions.RemoveAll(item => item.Id == session.Id);
-        return this.MapSummary(call, viewerAccountId);
+        return this.MapSummary(state, call, viewerAccountId);
     }
 
     private void AddSystemCallMessage(PersistedAppState state, PersistedConversation conversation, Guid actorAccountId, ChatMessageKind kind, string body, Guid callId, int? durationSeconds)
@@ -317,8 +317,9 @@ public sealed class CallService : ICallService
         return state.Conversations.Any(item => item.Id == conversationId && !item.IsDeleted && item.Members.Any(member => member.AccountId == accountId));
     }
 
-    private CallSummary MapSummary(PersistedCall call, Guid accountId)
+    private CallSummary MapSummary(PersistedAppState state, PersistedCall call, Guid accountId)
     {
+        var conversation = state.Conversations.SingleOrDefault(item => item.Id == call.ConversationId && !item.IsDeleted);
         var direction = call.IsGroup
             ? CallDirection.Group
             : call.StartedByAccountId == accountId ? CallDirection.Outgoing : CallDirection.Incoming;
@@ -326,7 +327,7 @@ public sealed class CallService : ICallService
         var acknowledged = !missedForViewer || call.MissedAcknowledged;
         return new CallSummary(
             call.Id,
-            call.DisplayName,
+            conversation is null ? call.DisplayName : this.GetConversationDisplayName(state, conversation, accountId),
             call.IsGroup ? CallKind.Group : CallKind.Direct,
             direction,
             call.StartedUtc,
@@ -345,13 +346,17 @@ public sealed class CallService : ICallService
             ? session.ParticipantAccountIds
             : conversation.Members.Select(item => item.AccountId).ToList();
         var participants = participantIds
-            .Select(id => state.Accounts.SingleOrDefault(account => account.Id == id)?.DisplayName ?? $"Unknown ({id})")
+            .Select(id =>
+            {
+                var account = state.Accounts.SingleOrDefault(candidate => candidate.Id == id);
+                return account is null ? $"Unknown ({id})" : AccountLabelFormatter.GetDisplayName(account);
+            })
             .ToList();
         return new ActiveCallSessionRecord(
             session.Id,
             session.ConversationId,
             session.CallId,
-            string.IsNullOrWhiteSpace(session.DisplayName) ? conversation.Name : session.DisplayName,
+            this.GetConversationDisplayName(state, conversation, accountId),
             session.IsGroup,
             session.StartedUtc,
             session.StartedByAccountId,
@@ -363,27 +368,31 @@ public sealed class CallService : ICallService
 
     private bool CanProvideVoiceSession()
     {
-        return this.voiceOptions.Enabled
-            && !string.IsNullOrWhiteSpace(this.voiceOptions.Provider)
-            && !string.IsNullOrWhiteSpace(this.voiceOptions.Host)
-            && this.voiceOptions.TcpPort > 0
-            && this.voiceOptions.UdpPort > 0;
+        return this.voiceOptions.Enabled;
     }
 
     private VoiceSessionInfo CreateVoiceSessionInfo(PersistedConversation conversation, bool isGroup)
     {
         var channelPrefix = isGroup ? "group" : "direct";
+        var provider = string.IsNullOrWhiteSpace(this.voiceOptions.Provider) ? "TomestonePhone Relay" : this.voiceOptions.Provider;
+        var host = string.IsNullOrWhiteSpace(this.voiceOptions.Host) ? "built-in" : this.voiceOptions.Host;
+        var tcpPort = this.voiceOptions.TcpPort > 0 ? this.voiceOptions.TcpPort : 443;
+        var udpPort = this.voiceOptions.UdpPort > 0 ? this.voiceOptions.UdpPort : tcpPort;
+        var qualityLabel = string.IsNullOrWhiteSpace(this.voiceOptions.QualityLabel) ? "Aether Voice" : this.voiceOptions.QualityLabel;
+        var sampleRateHz = this.voiceOptions.SampleRateHz > 0 ? this.voiceOptions.SampleRateHz : 16000;
+        var bitrateKbps = this.voiceOptions.BitrateKbps > 0 ? this.voiceOptions.BitrateKbps : 16;
+        var frameSizeMs = this.voiceOptions.FrameSizeMs > 0 ? this.voiceOptions.FrameSizeMs : 20;
         return new VoiceSessionInfo(
-            this.voiceOptions.Provider,
-            this.voiceOptions.Host,
-            this.voiceOptions.TcpPort,
-            this.voiceOptions.UdpPort,
+            provider,
+            host,
+            tcpPort,
+            udpPort,
             $"{channelPrefix}-{conversation.Id:N}",
             Convert.ToHexString(Guid.NewGuid().ToByteArray()).ToLowerInvariant(),
-            this.voiceOptions.QualityLabel,
-            this.voiceOptions.SampleRateHz,
-            this.voiceOptions.BitrateKbps,
-            this.voiceOptions.FrameSizeMs);
+            qualityLabel,
+            sampleRateHz,
+            bitrateKbps,
+            frameSizeMs);
     }
 
     private VoiceSessionInfo? MapVoiceSession(string provider, string host, int tcpPort, int udpPort, string channelName, string accessToken, string qualityLabel, int sampleRateHz, int bitrateKbps, int frameSizeMs)
@@ -394,6 +403,25 @@ public sealed class CallService : ICallService
         }
 
         return new VoiceSessionInfo(provider, host, tcpPort, udpPort, channelName, accessToken, qualityLabel, sampleRateHz, bitrateKbps, frameSizeMs);
+    }
+
+    private string GetConversationDisplayName(PersistedAppState state, PersistedConversation conversation, Guid viewerAccountId)
+    {
+        if (conversation.IsGroup)
+        {
+            return string.IsNullOrWhiteSpace(conversation.Name) ? "Group Call" : conversation.Name;
+        }
+
+        var otherParticipantId = conversation.Members
+            .Select(item => item.AccountId)
+            .FirstOrDefault(id => id != viewerAccountId);
+        var otherParticipant = state.Accounts.SingleOrDefault(item => item.Id == otherParticipantId);
+        if (otherParticipant is not null)
+        {
+            return AccountLabelFormatter.GetDisplayName(otherParticipant);
+        }
+
+        return string.IsNullOrWhiteSpace(conversation.Name) ? "Direct Call" : conversation.Name;
     }
 }
 

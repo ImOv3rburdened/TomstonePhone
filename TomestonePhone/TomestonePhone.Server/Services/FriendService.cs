@@ -17,9 +17,7 @@ public sealed class FriendService : IFriendService
         return this.repository.WriteAsync(state =>
         {
             var sender = state.Accounts.Single(item => item.Id == senderAccountId);
-            var target = state.Accounts.Single(item =>
-                item.Username.Equals(request.PhoneNumberOrUsername, StringComparison.OrdinalIgnoreCase)
-                || item.PhoneNumber == request.PhoneNumberOrUsername);
+            var target = AccountLabelFormatter.ResolveAccount(state.Accounts, request.PhoneNumberOrUsername);
 
             if (target.Id == senderAccountId)
             {

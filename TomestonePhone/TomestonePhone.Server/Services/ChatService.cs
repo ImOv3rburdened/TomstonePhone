@@ -69,7 +69,7 @@ public sealed class ChatService : IChatService
         {
             SystemConversationCoordinator.EnsureStaffConversation(state);
             var conversation = GetVisibleConversation(state, accountId, conversationId);
-            return MapDetail(state, conversation);
+            return MapDetail(state, conversation, accountId);
         }, cancellationToken);
     }
 
@@ -107,7 +107,7 @@ public sealed class ChatService : IChatService
 
             if (conversation.Kind == SystemConversationCoordinator.StaffConversationKind && actor.Role != nameof(AccountRole.Owner))
             {
-                return MapDetail(state, conversation);
+                return MapDetail(state, conversation, actorAccountId);
             }
 
             if (conversation.LinkedSupportTicketId is null && actorRole is GroupMemberRole.Member && request.Action != ChatModerationAction.AddMember)
@@ -148,7 +148,7 @@ public sealed class ChatService : IChatService
                     break;
             }
 
-            return conversation.IsDeleted ? null : MapDetail(state, conversation);
+            return conversation.IsDeleted ? null : MapDetail(state, conversation, actorAccountId);
         }, cancellationToken);
     }
 
@@ -224,9 +224,7 @@ public sealed class ChatService : IChatService
         return this.repository.WriteAsync(state =>
         {
             SystemConversationCoordinator.EnsureStaffConversation(state);
-            var target = state.Accounts.Single(item =>
-                item.Username.Equals(request.UsernameOrPhoneNumber, StringComparison.OrdinalIgnoreCase)
-                || item.PhoneNumber == request.UsernameOrPhoneNumber);
+            var target = AccountLabelFormatter.ResolveAccount(state.Accounts, request.UsernameOrPhoneNumber);
             if (AccountLabelFormatter.IsUnavailable(target))
             {
                 throw new InvalidOperationException("The number you are trying to reach is no longer in service.");
@@ -248,7 +246,7 @@ public sealed class ChatService : IChatService
             var conversation = new PersistedConversation
             {
                 Id = Guid.NewGuid(),
-                Name = target.DisplayName,
+                Name = AccountLabelFormatter.GetDisplayName(target),
                 IsGroup = false,
                 Kind = SystemConversationCoordinator.StandardConversationKind,
                 Members =
@@ -283,11 +281,24 @@ public sealed class ChatService : IChatService
         return state.Conversations.Single(item => item.Id == conversationId && !item.IsDeleted && item.Members.Any(member => member.AccountId == accountId));
     }
 
-    private static ConversationDetail MapDetail(PersistedAppState state, PersistedConversation conversation)
+    private static ConversationDetail MapDetail(PersistedAppState state, PersistedConversation conversation, Guid viewerAccountId)
     {
+        var displayName = conversation.Name;
+        if (!conversation.IsGroup)
+        {
+            var otherParticipantId = conversation.Members
+                .Select(member => member.AccountId)
+                .FirstOrDefault(id => id != viewerAccountId);
+            var otherParticipant = state.Accounts.SingleOrDefault(item => item.Id == otherParticipantId);
+            if (otherParticipant is not null)
+            {
+                displayName = AccountLabelFormatter.GetDisplayName(otherParticipant);
+            }
+        }
+
         return new ConversationDetail(
             conversation.Id,
-            conversation.Name,
+            displayName,
             conversation.IsGroup,
             conversation.IsReadOnly,
             conversation.LinkedSupportTicketId,
@@ -456,6 +467,7 @@ public sealed class ChatService : IChatService
         next.Role = nameof(GroupMemberRole.Owner);
     }
 }
+
 
 
 

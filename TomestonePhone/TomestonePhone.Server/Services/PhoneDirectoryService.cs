@@ -22,7 +22,7 @@ public sealed class PhoneDirectoryService : IPhoneDirectoryService
                 .Select(item =>
                 {
                     var preference = owner.ContactPreferences[item.Id];
-                    return new ContactRecord(item.Id, AccountLabelFormatter.IsInactive(item) ? $"{preference.DisplayName} (Deactivated account)" : preference.DisplayName, item.PhoneNumber, preference.Note);
+                    return new ContactRecord(item.Id, AccountLabelFormatter.GetContactDisplayName(item, preference.DisplayName), item.PhoneNumber, preference.Note);
                 })
                 .OrderBy(item => item.DisplayName)
                 .ToList();

@@ -92,11 +92,13 @@ public sealed class PhoneWindow : Window
     private Task<AuthResult>? pendingAuthTask;
     private Task<PostAuthSnapshotResult>? pendingSnapshotTask;
     private Task<IReadOnlyList<ActiveCallSessionRecord>>? pendingActiveCallsTask;
+    private DateTimeOffset lastSnapshotRefreshUtc = DateTimeOffset.MinValue;
     private DateTimeOffset lastActiveCallRefreshUtc = DateTimeOffset.MinValue;
     private List<ActiveCallSessionRecord> activeCallSessions = [];
     private HashSet<Guid> seenIncomingDirectCallSessionIds = [];
     private bool refreshOnNextDraw = true;
     private bool snapshotRefreshQueued;
+    private bool snapshotRefreshQueuedSilently;
     private bool autoLoginAttempted;
     private string? lastChatDebugMessage;
     private MessageFolder activeMessageFolder = MessageFolder.Regular;
@@ -232,6 +234,7 @@ public sealed class PhoneWindow : Window
             this.TryBeginAutoLogin();
             this.EnsureSessionHydrated();
             this.TickMessageAutoRefresh();
+            this.TickSnapshotAutoRefresh();
             this.TickActiveCallAutoRefresh();
         }
         this.EnforceAspectRatio();
@@ -1460,27 +1463,19 @@ public sealed class PhoneWindow : Window
         }
         foreach (var contact in this.state.Contacts.OrderBy(item => item.DisplayName))
         {
-            using var item = ImRaii.Child($"contact-{contact.Id}", new Vector2(-1f, this.Scale(116f)), true);
+            using var item = ImRaii.Child($"contact-{contact.Id}", new Vector2(-1f, this.Scale(128f)), true, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
             if (!item.Success)
             {
                 continue;
             }
 
-            if (ImGui.Selectable($"{contact.DisplayName}##copy-name-{contact.Id}", false, ImGuiSelectableFlags.None, new Vector2(-1f, this.Scale(24f))))
-            {
-                ImGui.SetClipboardText(contact.DisplayName);
-                this.pendingStatus = "Name copied";
-            }
-            if (ImGui.Selectable($"{contact.PhoneNumber}##copy-phone-{contact.Id}", false, ImGuiSelectableFlags.None, new Vector2(-1f, this.Scale(24f))))
-            {
-                ImGui.SetClipboardText(contact.PhoneNumber);
-                this.pendingStatus = "Phone number copied";
-            }
+            this.DrawCopyableText(contact.DisplayName, contact.DisplayName, "Name copied");
+            this.DrawCopyableText(contact.PhoneNumber, contact.PhoneNumber, "Phone number copied", true);
             if (!string.IsNullOrWhiteSpace(contact.Note))
             {
-                ImGui.TextDisabled(contact.Note);
+                this.DrawWrappedDisabledText(contact.Note);
             }
-            var actionWidth = (ImGui.GetContentRegionAvail().X - this.Scale(12f)) * 0.5f;
+            var actionWidth = Math.Max(this.Scale(104f), (ImGui.GetContentRegionAvail().X - this.Scale(12f)) * 0.5f);
             if (ImGui.Button($"Message##{contact.Id}", new Vector2(actionWidth, this.Scale(30f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
             {
                 var conversation = this.client.StartDirectConversationAsync(this.configuration.AuthToken, new StartDirectConversationRequest(contact.PhoneNumber)).GetAwaiter().GetResult();
@@ -1559,15 +1554,15 @@ public sealed class PhoneWindow : Window
             ImGui.TextDisabled("Incoming Requests");
             foreach (var request in pendingIncoming)
             {
-                using var item = ImRaii.Child($"friend-request-{request.Id}", new Vector2(-1f, this.Scale(94f)), true, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+                using var item = ImRaii.Child($"friend-request-{request.Id}", new Vector2(-1f, this.Scale(106f)), true, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
                 if (!item.Success)
                 {
                     continue;
                 }
 
-                ImGui.TextUnformatted(request.DisplayName);
-                ImGui.TextDisabled($"Pending from {request.PhoneNumber}");
-                var actionWidth = (ImGui.GetContentRegionAvail().X - this.Scale(12f)) * 0.5f;
+                this.DrawCopyableText(request.DisplayName, request.DisplayName, "Name copied");
+                this.DrawCopyableText($"Pending from {request.PhoneNumber}", request.PhoneNumber, "Phone number copied", true);
+                var actionWidth = Math.Max(this.Scale(104f), (ImGui.GetContentRegionAvail().X - this.Scale(12f)) * 0.5f);
                 if (ImGui.Button($"Accept##{request.Id}", new Vector2(actionWidth, this.Scale(30f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
                 {
                     try
@@ -1616,14 +1611,14 @@ public sealed class PhoneWindow : Window
             ImGui.TextDisabled("Sent Requests");
             foreach (var request in pendingOutgoing)
             {
-                using var item = ImRaii.Child($"friend-request-outgoing-{request.Id}", new Vector2(-1f, this.Scale(76f)), true, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+                using var item = ImRaii.Child($"friend-request-outgoing-{request.Id}", new Vector2(-1f, this.Scale(86f)), true, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
                 if (!item.Success)
                 {
                     continue;
                 }
 
-                ImGui.TextUnformatted(request.DisplayName);
-                ImGui.TextDisabled($"Request sent to {request.PhoneNumber}");
+                this.DrawCopyableText(request.DisplayName, request.DisplayName, "Name copied");
+                this.DrawCopyableText($"Request sent to {request.PhoneNumber}", request.PhoneNumber, "Phone number copied", true);
             }
         }
 
@@ -1634,14 +1629,15 @@ public sealed class PhoneWindow : Window
 
         foreach (var friend in this.state.Friends.OrderBy(item => item.FriendDisplayName))
         {
-            using var item = ImRaii.Child($"friendship-{friend.FriendAccountId}", new Vector2(-1f, this.Scale(90f)), true, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+            using var item = ImRaii.Child($"friendship-{friend.FriendAccountId}", new Vector2(-1f, this.Scale(102f)), true, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
             if (!item.Success)
             {
                 continue;
             }
-            ImGui.TextUnformatted(friend.FriendDisplayName);
-            ImGui.TextDisabled($"Added {friend.SinceUtc.LocalDateTime:d}");
-            if (ImGui.Button($"Remove##{friend.FriendAccountId}", this.Scale(108f, 30f)) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+            this.DrawCopyableText(friend.FriendDisplayName, friend.FriendDisplayName, "Name copied");
+            this.DrawCopyableText(friend.FriendPhoneNumber, friend.FriendPhoneNumber, "Phone number copied", true);
+            this.DrawWrappedDisabledText($"Added {friend.SinceUtc.LocalDateTime:d}");
+            if (ImGui.Button($"Remove##{friend.FriendAccountId}", new Vector2(-1f, this.Scale(30f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
             {
                 try
                 {
@@ -2398,12 +2394,12 @@ public sealed class PhoneWindow : Window
     {
         return string.IsNullOrWhiteSpace(this.state.CurrentProfile.PhoneNumber) ? "Unavailable" : this.state.CurrentProfile.PhoneNumber;
     }
-    private void RefreshSnapshot()
+    private void RefreshSnapshot(bool silent = false)
     {
-        this.QueueSnapshotRefresh();
+        this.QueueSnapshotRefresh(silent);
     }
 
-    private void QueueSnapshotRefresh()
+    private void QueueSnapshotRefresh(bool silent = false)
     {
         if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
         {
@@ -2412,6 +2408,15 @@ public sealed class PhoneWindow : Window
 
         if (this.pendingAuthTask is { IsCompleted: false } || this.pendingSnapshotTask is { IsCompleted: false })
         {
+            if (!this.snapshotRefreshQueued)
+            {
+                this.snapshotRefreshQueuedSilently = silent;
+            }
+            else
+            {
+                this.snapshotRefreshQueuedSilently &= silent;
+            }
+
             this.snapshotRefreshQueued = true;
             return;
         }
@@ -2420,8 +2425,38 @@ public sealed class PhoneWindow : Window
         var identity = this.GetCurrentGameIdentity();
         this.refreshOnNextDraw = false;
         this.snapshotRefreshQueued = false;
-        this.pendingStatus = "Refreshing account...";
+        this.snapshotRefreshQueuedSilently = false;
+        if (!silent)
+        {
+            this.pendingStatus = "Refreshing account...";
+        }
+
         this.pendingSnapshotTask = this.LoadPostAuthSnapshotAsync(authToken, identity);
+    }
+
+    private void TickSnapshotAutoRefresh()
+    {
+        if (!this.IsOpen || string.IsNullOrWhiteSpace(this.configuration.AuthToken) || this.showHomeScreen || this.activeTab == PhoneTab.Messages)
+        {
+            return;
+        }
+
+        if (this.pendingAuthTask is { IsCompleted: false } || this.pendingSnapshotTask is { IsCompleted: false })
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var refreshInterval = this.activeTab is PhoneTab.Friends or PhoneTab.Contacts
+            ? TimeSpan.FromSeconds(3)
+            : TimeSpan.FromSeconds(6);
+        if (now - this.lastSnapshotRefreshUtc < refreshInterval)
+        {
+            return;
+        }
+
+        this.lastSnapshotRefreshUtc = now;
+        this.RefreshSnapshot(true);
     }
 
     private void TickActiveCallAutoRefresh()
@@ -2670,7 +2705,7 @@ public sealed class PhoneWindow : Window
 
         var call = this.state.ActiveCall;
         var center = ImGui.GetMainViewport().GetCenter();
-        ImGui.SetNextWindowPos(center, ImGuiCond.Always, new Vector2(0.5f, 0.5f));
+        ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
         ImGui.SetNextWindowSize(this.Scale(320f, 286f), ImGuiCond.Always);
         var open = true;
         if (!ImGui.Begin("Call###TomestonePhoneCallPopup", ref open, ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings))
@@ -2740,6 +2775,38 @@ public sealed class PhoneWindow : Window
         }
 
         ImGui.End();
+    }
+
+    private void DrawCopyableText(string text, string copiedValue, string copiedStatus, bool disabled = false)
+    {
+        ImGui.PushTextWrapPos(0f);
+        if (disabled)
+        {
+            ImGui.TextDisabled(text);
+        }
+        else
+        {
+            ImGui.TextUnformatted(text);
+        }
+
+        ImGui.PopTextWrapPos();
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Click to copy");
+            if (ImGui.IsMouseReleased(ImGuiMouseButton.Left))
+            {
+                ImGui.SetClipboardText(copiedValue);
+                this.pendingStatus = copiedStatus;
+            }
+        }
+    }
+
+    private void DrawWrappedDisabledText(string text)
+    {
+        ImGui.PushTextWrapPos(0f);
+        ImGui.TextDisabled(text);
+        ImGui.PopTextWrapPos();
     }
     private void DrawNotificationAnchorPicker()
     {
@@ -3899,7 +3966,7 @@ public sealed class PhoneWindow : Window
 
             if (!string.IsNullOrWhiteSpace(this.configuration.AuthToken) && this.snapshotRefreshQueued)
             {
-                this.QueueSnapshotRefresh();
+                this.QueueSnapshotRefresh(this.snapshotRefreshQueuedSilently);
             }
         }
     }
