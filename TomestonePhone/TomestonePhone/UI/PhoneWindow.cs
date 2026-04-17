@@ -1508,8 +1508,11 @@ public sealed class PhoneWindow : Window
     }
     private void DrawFriends()
     {
-        var topHeight = this.Scale(174f);
-        using (var request = ImRaii.Child("friends-request-card", new Vector2(-1f, topHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+        var splitSpacing = this.Scale(10f);
+        var availableHeight = ImGui.GetContentRegionAvail().Y;
+        var panelHeight = Math.Max(this.Scale(180f), (availableHeight - splitSpacing) * 0.5f);
+
+        using (var request = ImRaii.Child("friends-request-card", new Vector2(-1f, panelHeight), true))
         {
             if (request.Success)
             {
@@ -1533,6 +1536,8 @@ public sealed class PhoneWindow : Window
                 }
             }
         }
+
+        ImGui.Dummy(new Vector2(0f, splitSpacing));
 
         using var list = ImRaii.Child("friends-list-card", new Vector2(-1f, 0f), true);
         if (!list.Success)
@@ -3209,15 +3214,17 @@ public sealed class PhoneWindow : Window
             ImGui.OpenPopup("TomestonePhone Legal Terms");
         }
 
+        var modalSize = this.GetSetupModalSize();
         var center = ImGui.GetMainViewport().GetCenter();
         ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
-        ImGui.SetNextWindowSize(new Vector2(620f, 560f), ImGuiCond.Appearing);
+        ImGui.SetNextWindowSize(modalSize, ImGuiCond.Appearing);
 
         if (ImGui.BeginPopupModal("TomestonePhone Legal Terms", ImGuiWindowFlags.NoResize))
         {
             ImGui.TextWrapped(LegalTerms.Summary);
             ImGui.Separator();
-            using var child = ImRaii.Child("legal-scroll", new Vector2(0f, 390f), true);
+            var legalScrollHeight = Math.Max(this.Scale(140f), ImGui.GetContentRegionAvail().Y - this.Scale(88f));
+            using var child = ImRaii.Child("legal-scroll", new Vector2(0f, legalScrollHeight), true);
             if (child.Success)
             {
                 ImGui.TextWrapped(LegalTerms.FullText);
@@ -3250,15 +3257,17 @@ public sealed class PhoneWindow : Window
             ImGui.OpenPopup("TomestonePhone Privacy Policy");
         }
 
+        var modalSize = this.GetSetupModalSize();
         var center = ImGui.GetMainViewport().GetCenter();
         ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
-        ImGui.SetNextWindowSize(new Vector2(620f, 560f), ImGuiCond.Appearing);
+        ImGui.SetNextWindowSize(modalSize, ImGuiCond.Appearing);
 
         if (ImGui.BeginPopupModal("TomestonePhone Privacy Policy", ImGuiWindowFlags.NoResize))
         {
             ImGui.TextWrapped(PrivacyPolicy.Summary);
             ImGui.Separator();
-            using var child = ImRaii.Child("privacy-scroll", new Vector2(0f, 390f), true);
+            var privacyScrollHeight = Math.Max(this.Scale(140f), ImGui.GetContentRegionAvail().Y - this.Scale(88f));
+            using var child = ImRaii.Child("privacy-scroll", new Vector2(0f, privacyScrollHeight), true);
             if (child.Success)
             {
                 ImGui.TextWrapped(PrivacyPolicy.FullText);
@@ -3284,9 +3293,10 @@ public sealed class PhoneWindow : Window
             ImGui.OpenPopup("TomestonePhone Opening Emote");
         }
 
+        var modalSize = this.GetSetupModalSize(this.Scale(220f));
         var center = ImGui.GetMainViewport().GetCenter();
         ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
-        ImGui.SetNextWindowSize(new Vector2(520f, 230f), ImGuiCond.Appearing);
+        ImGui.SetNextWindowSize(modalSize, ImGuiCond.Appearing);
 
         if (ImGui.BeginPopupModal("TomestonePhone Opening Emote", ImGuiWindowFlags.NoResize))
         {
@@ -3314,6 +3324,22 @@ public sealed class PhoneWindow : Window
 
             ImGui.EndPopup();
         }
+    }
+
+    private Vector2 GetSetupModalSize(float? minimumHeight = null)
+    {
+        var viewport = ImGui.GetMainViewport();
+        var fallbackWindowSize = this.Size ?? new Vector2(DefaultWindowWidth * MinimumWindowScale, DefaultWindowHeight * MinimumWindowScale);
+        var phoneWindowSize = this.lastWindowSize.X > 0f && this.lastWindowSize.Y > 0f
+            ? this.lastWindowSize
+            : fallbackWindowSize;
+        var minWidth = this.Scale(320f);
+        var minHeight = minimumHeight ?? this.Scale(420f);
+        var maxWidth = Math.Max(minWidth, viewport.WorkSize.X - this.Scale(32f));
+        var maxHeight = Math.Max(minHeight, viewport.WorkSize.Y - this.Scale(32f));
+        var width = Math.Clamp(phoneWindowSize.X - this.Scale(12f), minWidth, maxWidth);
+        var height = Math.Clamp(phoneWindowSize.Y - this.Scale(12f), minHeight, maxHeight);
+        return new Vector2(width, height);
     }
 
     private void DrawExternalLinkWarningModal()
@@ -3992,6 +4018,12 @@ public sealed class PhoneWindow : Window
 
     private sealed record PostAuthSnapshotResult(PhoneSnapshot? Snapshot, PhoneProfile? UpdatedProfile, Exception? Error);
 }
+
+
+
+
+
+
 
 
 
