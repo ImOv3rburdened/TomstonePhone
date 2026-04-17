@@ -56,6 +56,8 @@ public sealed class Plugin : IDalamudPlugin
 
         this.windows.AddWindow(this.phoneWindow);
 
+        this.service.PluginInterface.UiBuilder.DisableGposeUiHide = true;
+
         this.service.PluginInterface.UiBuilder.Draw += this.DrawUi;
         this.service.PluginInterface.UiBuilder.OpenMainUi += this.ToggleUi;
         this.service.PluginInterface.UiBuilder.OpenConfigUi += this.OpenSettings;
