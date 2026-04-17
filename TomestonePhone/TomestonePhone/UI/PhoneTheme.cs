@@ -29,13 +29,13 @@ public sealed class PhoneTheme : IDisposable
         theme.PushStyle(ImGuiStyleVar.GrabRounding, 18f);
         theme.PushStyle(ImGuiStyleVar.ScrollbarRounding, 18f);
         theme.PushStyle(ImGuiStyleVar.WindowPadding, new Vector2(22f, 18f));
-        theme.PushStyle(ImGuiStyleVar.FramePadding, new Vector2(14f, 6f));
+        theme.PushStyle(ImGuiStyleVar.FramePadding, new Vector2(14f, 8f));
         theme.PushStyle(ImGuiStyleVar.ItemSpacing, new Vector2(12f, 12f));
         theme.PushStyle(ImGuiStyleVar.ScrollbarSize, 8f);
         theme.PushStyle(ImGuiStyleVar.ChildBorderSize, 0f);
         theme.PushStyle(ImGuiStyleVar.FrameBorderSize, 0f);
-        theme.PushStyle(ImGuiStyleVar.ButtonTextAlign, new Vector2(0.5f, 0.42f));
-        theme.PushStyle(ImGuiStyleVar.SelectableTextAlign, new Vector2(0.5f, 0.42f));
+        theme.PushStyle(ImGuiStyleVar.ButtonTextAlign, new Vector2(0.5f, 0.5f));
+        theme.PushStyle(ImGuiStyleVar.SelectableTextAlign, new Vector2(0.5f, 0.5f));
 
         theme.PushColor(ImGuiCol.WindowBg, window);
         theme.PushColor(ImGuiCol.ChildBg, panel);

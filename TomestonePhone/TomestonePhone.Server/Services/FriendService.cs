@@ -16,9 +16,28 @@ public sealed class FriendService : IFriendService
     {
         return this.repository.WriteAsync(state =>
         {
+            var sender = state.Accounts.Single(item => item.Id == senderAccountId);
             var target = state.Accounts.Single(item =>
                 item.Username.Equals(request.PhoneNumberOrUsername, StringComparison.OrdinalIgnoreCase)
                 || item.PhoneNumber == request.PhoneNumberOrUsername);
+
+            if (target.Id == senderAccountId)
+            {
+                throw new InvalidOperationException("You cannot send a friend request to yourself.");
+            }
+
+            if (state.Friendships.Any(item => MatchesFriendship(item, senderAccountId, target.Id)))
+            {
+                throw new InvalidOperationException("You are already friends.");
+            }
+
+            if (state.FriendRequests.Any(item =>
+                    ((item.SenderAccountId == senderAccountId && item.RecipientAccountId == target.Id)
+                    || (item.SenderAccountId == target.Id && item.RecipientAccountId == senderAccountId))
+                    && string.Equals(item.Status, FriendRequestStatus.Pending.ToString(), StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException("A pending friend request already exists.");
+            }
 
             var record = new PersistedFriendRequest
             {
@@ -31,8 +50,7 @@ public sealed class FriendService : IFriendService
             };
 
             state.FriendRequests.Add(record);
-            var sender = state.Accounts.Single(item => item.Id == senderAccountId);
-            return new FriendRequestRecord(record.Id, AccountLabelFormatter.GetDisplayName(sender), sender.PhoneNumber, FriendRequestStatus.Pending);
+            return new FriendRequestRecord(record.Id, AccountLabelFormatter.GetDisplayName(target), target.PhoneNumber, FriendRequestStatus.Pending, false);
         }, cancellationToken);
     }
 
@@ -41,17 +59,21 @@ public sealed class FriendService : IFriendService
         return this.repository.ReadAsync<IReadOnlyList<FriendRequestRecord>>(state =>
         {
             return state.FriendRequests
-                .Where(item => item.RecipientAccountId == accountId)
+                .Where(item => item.RecipientAccountId == accountId || item.SenderAccountId == accountId)
                 .Select(item =>
                 {
-                    var sender = state.Accounts.SingleOrDefault(account => account.Id == item.SenderAccountId);
+                    var isIncoming = item.RecipientAccountId == accountId;
+                    var otherAccountId = isIncoming ? item.SenderAccountId : item.RecipientAccountId;
+                    var otherAccount = state.Accounts.SingleOrDefault(account => account.Id == otherAccountId);
                     return new FriendRequestRecord(
                         item.Id,
-                        sender is null ? "Unknown" : AccountLabelFormatter.GetDisplayName(sender),
-                        sender?.PhoneNumber ?? "0000000000",
-                        Enum.TryParse<FriendRequestStatus>(item.Status, out var status) ? status : FriendRequestStatus.Pending);
+                        otherAccount is null ? "Unknown" : AccountLabelFormatter.GetDisplayName(otherAccount),
+                        otherAccount?.PhoneNumber ?? "0000000000",
+                        Enum.TryParse<FriendRequestStatus>(item.Status, out var status) ? status : FriendRequestStatus.Pending,
+                        isIncoming);
                 })
-                .OrderByDescending(item => item.DisplayName)
+                .OrderByDescending(item => item.Status == FriendRequestStatus.Pending)
+                .ThenBy(item => item.DisplayName)
                 .ToList();
         }, cancellationToken);
     }
@@ -98,9 +120,10 @@ public sealed class FriendService : IFriendService
 
             return new FriendRequestRecord(
                 record.Id,
-                sender?.DisplayName ?? "Unknown",
+                sender is null ? "Unknown" : AccountLabelFormatter.GetDisplayName(sender),
                 sender?.PhoneNumber ?? "0000000000",
-                request.Accept ? FriendRequestStatus.Accepted : FriendRequestStatus.Declined);
+                request.Accept ? FriendRequestStatus.Accepted : FriendRequestStatus.Declined,
+                true);
         }, cancellationToken);
     }
 

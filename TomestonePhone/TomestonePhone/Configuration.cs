@@ -64,7 +64,7 @@ public sealed class Configuration : IPluginConfiguration
 
     public string GiphyRating { get; set; } = "pg-13";
 
-    public bool LockViewport { get; set; } = true;
+    public bool LockViewport { get; set; } = false;
 
     public bool StartHidden { get; set; }
 

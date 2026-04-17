@@ -23,6 +23,7 @@ builder.Services.AddSingleton<IAccountService, AccountService>();
 builder.Services.AddSingleton<IPhoneDirectoryService, PhoneDirectoryService>();
 builder.Services.AddSingleton<IChatService, ChatService>();
 builder.Services.AddSingleton<ICallService, CallService>();
+builder.Services.AddSingleton<CallVoiceRelayService>();
 builder.Services.AddSingleton<IFriendService, FriendService>();
 builder.Services.AddSingleton<IReportService, ReportService>();
 builder.Services.AddSingleton<ISupportTicketService, SupportTicketService>();
@@ -39,6 +40,7 @@ builder.Services.AddSignalR();
 var app = builder.Build();
 await app.Services.GetRequiredService<IPhoneRepository>().InitializeAsync();
 app.UseCors("TomestonePhone");
+app.UseWebSockets();
 app.Use(async (context, next) =>
 {
     var accounts = context.RequestServices.GetRequiredService<IAccountService>();
@@ -450,6 +452,31 @@ app.MapPost("/api/calls/complete", async (HttpContext context, CompleteCallReque
 
     var result = await calls.CompleteCallAsync(accountId.Value, request, cancellationToken);
     return result is null ? Results.NotFound() : Results.Ok(result);
+});
+
+app.Map("/ws/calls/{sessionId:guid}", async (HttpContext context, Guid sessionId, IAccountService accounts, CallVoiceRelayService relay, CancellationToken cancellationToken) =>
+{
+    if (!context.WebSockets.IsWebSocketRequest)
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        return;
+    }
+
+    var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
+    if (accountId is null)
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        return;
+    }
+
+    if (!await relay.CanJoinSessionAsync(sessionId, accountId.Value, cancellationToken))
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
+    using var socket = await context.WebSockets.AcceptWebSocketAsync();
+    await relay.RelayAsync(sessionId, accountId.Value, socket, cancellationToken);
 });
 
 app.MapPost("/api/friends", async (HttpContext context, FriendRequestCreateRequest request, IAccountService accounts, IFriendService friends, CancellationToken cancellationToken) =>
