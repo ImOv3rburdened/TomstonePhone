@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
-using MumbleSharp.Audio.Codecs.Opus;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 using TomestonePhone.Shared.Models;
@@ -9,6 +8,7 @@ namespace TomestonePhone.Voice;
 
 public sealed class VoiceChatSession : IDisposable
 {
+    private readonly SemaphoreSlim sendLock = new(1, 1);
     private readonly object syncRoot = new();
     private readonly ConcurrentDictionary<Guid, RemoteSpeakerState> remoteSpeakers = new();
     private readonly byte[] captureAccumulator = new byte[64 * 1024];
@@ -20,7 +20,6 @@ public sealed class VoiceChatSession : IDisposable
     private WaveInEvent? waveIn;
     private WaveOutEvent? waveOut;
     private MixingSampleProvider? mixer;
-    private OpusCodec? encoder;
     private WaveFormat? waveFormat;
     private Guid sessionId;
     private Guid currentAccountId;
@@ -49,46 +48,53 @@ public sealed class VoiceChatSession : IDisposable
         var sampleRate = Math.Max(8000, voiceSession.SampleRateHz);
         const byte sampleBits = 16;
         const byte channels = 1;
-        this.frameMilliseconds = Math.Clamp(voiceSession.FrameSizeMs <= 0 ? 20 : voiceSession.FrameSizeMs, 10, 60);
-        this.frameBytes = sampleRate * channels * (sampleBits / 8) * this.frameMilliseconds / 1000;
-        this.waveFormat = new WaveFormat(sampleRate, sampleBits, channels);
-        this.encoder = new OpusCodec(sampleRate, sampleBits, channels, (ushort)this.frameMilliseconds);
-        this.sessionId = call.SessionId;
-        this.currentAccountId = accountId;
-        this.isMuted = call.IsMuted;
-
-        this.mixer = new MixingSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels))
+        try
         {
-            ReadFully = true,
-        };
+            this.frameMilliseconds = Math.Clamp(voiceSession.FrameSizeMs <= 0 ? 20 : voiceSession.FrameSizeMs, 10, 60);
+            this.frameBytes = sampleRate * channels * (sampleBits / 8) * this.frameMilliseconds / 1000;
+            this.waveFormat = new WaveFormat(sampleRate, sampleBits, channels);
+            this.sessionId = call.SessionId;
+            this.currentAccountId = accountId;
+            this.isMuted = call.IsMuted;
 
-        this.waveOut = new WaveOutEvent
+            this.mixer = new MixingSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels))
+            {
+                ReadFully = true,
+            };
+
+            this.waveOut = new WaveOutEvent
+            {
+                DesiredLatency = this.frameMilliseconds * 2,
+                NumberOfBuffers = 3,
+            };
+            this.waveOut.Init(this.mixer.ToWaveProvider16());
+            this.waveOut.Play();
+
+            this.waveIn = new WaveInEvent
+            {
+                DeviceNumber = -1,
+                BufferMilliseconds = this.frameMilliseconds,
+                NumberOfBuffers = 3,
+                WaveFormat = this.waveFormat,
+            };
+            this.waveIn.DataAvailable += this.OnCaptureDataAvailable;
+            this.waveIn.RecordingStopped += this.OnRecordingStopped;
+
+            this.webSocket = new ClientWebSocket();
+            this.webSocket.Options.SetRequestHeader("Authorization", $"Bearer {authToken}");
+            var uri = BuildVoiceWebSocketUri(serverBaseUrl, call.SessionId);
+            this.cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            await this.webSocket.ConnectAsync(uri, this.cancellationTokenSource.Token).ConfigureAwait(false);
+
+            this.receiveLoopTask = Task.Run(() => this.ReceiveLoopAsync(this.cancellationTokenSource.Token), this.cancellationTokenSource.Token);
+            this.waveIn.StartRecording();
+            this.IsConnected = true;
+        }
+        catch
         {
-            DesiredLatency = this.frameMilliseconds * 2,
-            NumberOfBuffers = 3,
-        };
-        this.waveOut.Init(this.mixer.ToWaveProvider16());
-        this.waveOut.Play();
-
-        this.waveIn = new WaveInEvent
-        {
-            DeviceNumber = -1,
-            BufferMilliseconds = this.frameMilliseconds,
-            NumberOfBuffers = 3,
-            WaveFormat = this.waveFormat,
-        };
-        this.waveIn.DataAvailable += this.OnCaptureDataAvailable;
-        this.waveIn.RecordingStopped += this.OnRecordingStopped;
-
-        this.webSocket = new ClientWebSocket();
-        this.webSocket.Options.SetRequestHeader("Authorization", $"Bearer {authToken}");
-        var uri = BuildVoiceWebSocketUri(serverBaseUrl, call.SessionId);
-        this.cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        await this.webSocket.ConnectAsync(uri, this.cancellationTokenSource.Token).ConfigureAwait(false);
-
-        this.receiveLoopTask = Task.Run(() => this.ReceiveLoopAsync(this.cancellationTokenSource.Token), this.cancellationTokenSource.Token);
-        this.waveIn.StartRecording();
-        this.IsConnected = true;
+            await this.StopAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     public void SetMuted(bool muted)
@@ -149,7 +155,6 @@ public sealed class VoiceChatSession : IDisposable
 
         this.cancellationTokenSource?.Dispose();
         this.cancellationTokenSource = null;
-        this.encoder = null;
         this.captureAccumulatorLength = 0;
 
         foreach (var speaker in this.remoteSpeakers.Values)
@@ -204,9 +209,36 @@ public sealed class VoiceChatSession : IDisposable
         return builder.Uri;
     }
 
+    private async Task SendFrameAsync(byte[] frame)
+    {
+        var socket = this.webSocket;
+        if (socket is null || socket.State != WebSocketState.Open)
+        {
+            return;
+        }
+
+        await this.sendLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (this.disposed || this.webSocket is null || this.webSocket.State != WebSocketState.Open)
+            {
+                return;
+            }
+
+            await this.webSocket.SendAsync(new ArraySegment<byte>(frame), WebSocketMessageType.Binary, true, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch
+        {
+        }
+        finally
+        {
+            this.sendLock.Release();
+        }
+    }
+
     private void OnCaptureDataAvailable(object? sender, WaveInEventArgs args)
     {
-        if (this.disposed || this.webSocket is null || this.webSocket.State != WebSocketState.Open || this.encoder is null || this.isMuted)
+        if (this.disposed || this.webSocket is null || this.webSocket.State != WebSocketState.Open || this.isMuted)
         {
             return;
         }
@@ -232,14 +264,7 @@ public sealed class VoiceChatSession : IDisposable
                 Buffer.BlockCopy(this.captureAccumulator, 0, frame, 0, this.frameBytes);
                 Buffer.BlockCopy(this.captureAccumulator, this.frameBytes, this.captureAccumulator, 0, this.captureAccumulatorLength - this.frameBytes);
                 this.captureAccumulatorLength -= this.frameBytes;
-
-                var encoded = this.encoder.Encode(new ArraySegment<byte>(frame));
-                if (encoded.Length == 0)
-                {
-                    continue;
-                }
-
-                _ = this.webSocket.SendAsync(new ArraySegment<byte>(encoded), WebSocketMessageType.Binary, true, CancellationToken.None);
+                _ = this.SendFrameAsync(frame);
             }
         }
     }
@@ -289,10 +314,9 @@ public sealed class VoiceChatSession : IDisposable
             var payload = new byte[packet.Length - 16];
             Buffer.BlockCopy(packet, 16, payload, 0, payload.Length);
             var speaker = this.remoteSpeakers.GetOrAdd(senderId, this.CreateRemoteSpeaker);
-            var decoded = speaker.Decoder.Decode(payload);
-            if (decoded.Length > 0)
+            if (payload.Length > 0)
             {
-                speaker.Buffer.AddSamples(decoded, 0, decoded.Length);
+                speaker.Buffer.AddSamples(payload, 0, payload.Length);
             }
         }
     }
@@ -316,23 +340,20 @@ public sealed class VoiceChatSession : IDisposable
             this.mixer.AddMixerInput(sampleProvider);
         }
 
-        return new RemoteSpeakerState(buffer, sampleProvider, new OpusCodec(this.waveFormat.SampleRate, 16, 1, (ushort)this.frameMilliseconds));
+        return new RemoteSpeakerState(buffer, sampleProvider);
     }
 
     private sealed class RemoteSpeakerState : IDisposable
     {
-        public RemoteSpeakerState(BufferedWaveProvider buffer, ISampleProvider sampleProvider, OpusCodec decoder)
+        public RemoteSpeakerState(BufferedWaveProvider buffer, ISampleProvider sampleProvider)
         {
             this.Buffer = buffer;
             this.SampleProvider = sampleProvider;
-            this.Decoder = decoder;
         }
 
         public BufferedWaveProvider Buffer { get; }
 
         public ISampleProvider SampleProvider { get; }
-
-        public OpusCodec Decoder { get; }
 
         public void Dispose()
         {

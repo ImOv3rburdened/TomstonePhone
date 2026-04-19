@@ -1435,7 +1435,7 @@ public sealed class PhoneWindow : Window
                         }
                         else
                         {
-                            var contact = this.client.AddContactAsync(this.configuration.AuthToken, otherMember.AccountId, otherMember.DisplayName, otherMember.PhoneNumber).GetAwaiter().GetResult();
+                            var contact = this.client.AddContactAsync(this.configuration.AuthToken, otherMember.AccountId, otherMember.DisplayName, string.Empty).GetAwaiter().GetResult();
                             this.state.Contacts.RemoveAll(item => item.Id == contact.Id);
                             this.state.Contacts.Add(contact);
                             this.contactAddTarget = string.Empty;
@@ -3367,7 +3367,7 @@ public sealed class PhoneWindow : Window
 
         if (ImGui.BeginPopupModal("TomestonePhone Opening Emote", ImGuiWindowFlags.NoResize))
         {
-            ImGui.TextWrapped("Would you like TomestonePhone to play /tomestonephone when you open the app with /ts or /tomestone?");
+            ImGui.TextWrapped("Would you like TomestonePhone to play /tomestonephone when you open the app with /ts?");
             ImGui.Spacing();
             ImGui.TextWrapped("This only plays on open, never on close, and you can change it later in Settings.");
             ImGui.Spacing();

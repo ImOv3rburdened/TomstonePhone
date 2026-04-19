@@ -22,7 +22,10 @@ public sealed class PhoneDirectoryService : IPhoneDirectoryService
                 .Select(item =>
                 {
                     var preference = owner.ContactPreferences[item.Id];
-                    return new ContactRecord(item.Id, AccountLabelFormatter.GetContactDisplayName(item, preference.DisplayName), item.PhoneNumber, preference.Note);
+                    var note = string.Equals(preference.Note, item.PhoneNumber, StringComparison.OrdinalIgnoreCase)
+                        ? string.Empty
+                        : preference.Note;
+                    return new ContactRecord(item.Id, AccountLabelFormatter.GetContactDisplayName(item, preference.DisplayName), item.PhoneNumber, note);
                 })
                 .OrderBy(item => item.DisplayName)
                 .ToList();

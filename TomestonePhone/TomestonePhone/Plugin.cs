@@ -10,8 +10,7 @@ namespace TomestonePhone;
 
 public sealed class Plugin : IDalamudPlugin
 {
-    public const string CommandName = "/tomestone";
-    public const string CommandAlias = "/ts";
+    public const string CommandName = "/ts";
 
     private readonly Service service;
     private readonly Configuration configuration;
@@ -67,11 +66,6 @@ public sealed class Plugin : IDalamudPlugin
             HelpMessage = "Open the TomestonePhone UI.",
         });
 
-        this.service.Commands.AddHandler(CommandAlias, new CommandInfo(this.OnCommand)
-        {
-            HelpMessage = "Open the TomestonePhone UI.",
-        });
-
         if (!this.configuration.StartHidden)
         {
             this.phoneWindow.IsOpen = true;
@@ -83,7 +77,6 @@ public sealed class Plugin : IDalamudPlugin
     public void Dispose()
     {
         this.service.Commands.RemoveHandler(CommandName);
-        this.service.Commands.RemoveHandler(CommandAlias);
         this.service.PluginInterface.UiBuilder.Draw -= this.DrawUi;
         this.service.PluginInterface.UiBuilder.OpenMainUi -= this.ToggleUi;
         this.service.PluginInterface.UiBuilder.OpenConfigUi -= this.OpenSettings;
