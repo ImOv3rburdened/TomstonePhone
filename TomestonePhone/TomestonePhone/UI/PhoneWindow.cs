@@ -114,6 +114,9 @@ public sealed class PhoneWindow : Window
     private bool clientRecommendedNoticeShown;
     private DateTimeOffset? startupSplashStartedUtc;
     private bool startupSplashCompleted;
+    private IReadOnlyList<VoiceAudioDeviceInfo> voiceInputDevices = [];
+    private IReadOnlyList<VoiceAudioDeviceInfo> voiceOutputDevices = [];
+    private DateTimeOffset lastVoiceDeviceRefreshUtc = DateTimeOffset.MinValue;
     public PhoneWindow(Service service, Configuration configuration, PhoneState state, TomestonePhoneClient client)
         : base("TomestonePhone###TomestonePhoneMain")
     {
@@ -1852,6 +1855,76 @@ public sealed class PhoneWindow : Window
         this.DrawNotificationAnchorPicker();
 
         ImGui.Separator();
+        ImGui.TextDisabled("Voice");
+        this.RefreshVoiceDeviceCatalog();
+        var inputResolution = VoiceAudioDeviceCatalog.ResolveInputDevice(this.voiceInputDevices, this.configuration.PreferredVoiceInputDeviceKey, this.configuration.PreferredVoiceInputDeviceName);
+        var outputResolution = VoiceAudioDeviceCatalog.ResolveOutputDevice(this.voiceOutputDevices, this.configuration.PreferredVoiceOutputDeviceKey, this.configuration.PreferredVoiceOutputDeviceName);
+        this.DrawVoiceDevicePicker(
+            "Input Device",
+            "##VoiceInputDevice",
+            this.voiceInputDevices,
+            inputResolution,
+            this.configuration.PreferredVoiceInputDeviceKey,
+            this.configuration.PreferredVoiceInputDeviceName,
+            this.ApplyVoiceInputDevicePreference);
+        this.DrawVoiceDevicePicker(
+            "Output Device",
+            "##VoiceOutputDevice",
+            this.voiceOutputDevices,
+            outputResolution,
+            this.configuration.PreferredVoiceOutputDeviceKey,
+            this.configuration.PreferredVoiceOutputDeviceName,
+            this.ApplyVoiceOutputDevicePreference);
+
+        var inputMissingMessage = GetSavedVoiceDeviceMissingMessage("input", inputResolution);
+        if (!string.IsNullOrWhiteSpace(inputMissingMessage))
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.95f, 0.78f, 0.35f, 1f));
+            ImGui.TextWrapped(inputMissingMessage);
+            ImGui.PopStyleColor();
+        }
+
+        var outputMissingMessage = GetSavedVoiceDeviceMissingMessage("output", outputResolution);
+        if (!string.IsNullOrWhiteSpace(outputMissingMessage))
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.95f, 0.78f, 0.35f, 1f));
+            ImGui.TextWrapped(outputMissingMessage);
+            ImGui.PopStyleColor();
+        }
+
+        var reduceVoiceBackgroundNoise = this.configuration.ReduceVoiceBackgroundNoise;
+        if (ImGui.Checkbox("Reduce fan/background noise", ref reduceVoiceBackgroundNoise))
+        {
+            this.configuration.ReduceVoiceBackgroundNoise = reduceVoiceBackgroundNoise;
+            this.pendingStatus = reduceVoiceBackgroundNoise
+                ? "Background noise reduction enabled"
+                : "Background noise reduction disabled";
+        }
+        ImGui.TextDisabled("Uses a simple low-cut filter and speech gate. Best for fans and steady room noise.");
+
+        var voiceMicVolumePercent = this.configuration.VoiceMicVolume * 100f;
+        if (ImGui.SliderFloat("Mic Volume", ref voiceMicVolumePercent, 25f, 300f, "%.0f%%"))
+        {
+            this.configuration.VoiceMicVolume = voiceMicVolumePercent / 100f;
+            this.voiceChatSession.SetLevels(this.configuration.VoiceMicVolume, this.configuration.VoiceOutputVolume);
+            this.pendingStatus = $"Mic volume set to {voiceMicVolumePercent:0}%";
+        }
+
+        var voiceOutputVolumePercent = this.configuration.VoiceOutputVolume * 100f;
+        if (ImGui.SliderFloat("Call Volume", ref voiceOutputVolumePercent, 25f, 300f, "%.0f%%"))
+        {
+            this.configuration.VoiceOutputVolume = voiceOutputVolumePercent / 100f;
+            this.voiceChatSession.SetLevels(this.configuration.VoiceMicVolume, this.configuration.VoiceOutputVolume);
+            this.pendingStatus = $"Call volume set to {voiceOutputVolumePercent:0}%";
+        }
+        ImGui.TextDisabled("These only affect TomestonePhone voice calls.");
+
+        if (this.state.ActiveCall is not null)
+        {
+            ImGui.TextDisabled("Device changes apply on the next call. Volume changes apply immediately.");
+        }
+
+        ImGui.Separator();
         ImGui.TextDisabled("Account");
         var playOpenEmote = this.configuration.PlayOpenEmote;
         if (ImGui.Checkbox("Play /tomestonephone emote when opening via command", ref playOpenEmote))
@@ -2154,8 +2227,24 @@ public sealed class PhoneWindow : Window
 
         try
         {
-            this.voiceChatSession.StartAsync(this.configuration.ServerBaseUrl, this.configuration.AuthToken, this.state.CurrentProfile.AccountId, activeCall).GetAwaiter().GetResult();
+            var inputResolution = VoiceAudioDeviceCatalog.ResolveInputDevice(this.configuration.PreferredVoiceInputDeviceKey, this.configuration.PreferredVoiceInputDeviceName);
+            var outputResolution = VoiceAudioDeviceCatalog.ResolveOutputDevice(this.configuration.PreferredVoiceOutputDeviceKey, this.configuration.PreferredVoiceOutputDeviceName);
+            this.voiceChatSession.StartAsync(
+                this.configuration.ServerBaseUrl,
+                this.configuration.AuthToken,
+                this.state.CurrentProfile.AccountId,
+                activeCall,
+                inputResolution.DeviceNumber,
+                outputResolution.DeviceNumber,
+                this.configuration.ReduceVoiceBackgroundNoise,
+                this.configuration.VoiceMicVolume,
+                this.configuration.VoiceOutputVolume).GetAwaiter().GetResult();
             this.voiceChatSession.SetMuted(activeCall.IsMuted);
+            var fallbackMessage = GetVoiceDeviceFallbackMessage(inputResolution, outputResolution);
+            if (!string.IsNullOrWhiteSpace(fallbackMessage))
+            {
+                this.pendingStatus = fallbackMessage;
+            }
         }
         catch (Exception ex)
         {
@@ -2830,6 +2919,122 @@ public sealed class PhoneWindow : Window
 
             ImGui.EndCombo();
         }
+    }
+
+    private void RefreshVoiceDeviceCatalog(bool force = false)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (!force && now - this.lastVoiceDeviceRefreshUtc < TimeSpan.FromSeconds(2))
+        {
+            return;
+        }
+
+        this.voiceInputDevices = VoiceAudioDeviceCatalog.GetInputDevices();
+        this.voiceOutputDevices = VoiceAudioDeviceCatalog.GetOutputDevices();
+        this.lastVoiceDeviceRefreshUtc = now;
+    }
+
+    private void DrawVoiceDevicePicker(
+        string label,
+        string comboId,
+        IReadOnlyList<VoiceAudioDeviceInfo> devices,
+        VoiceAudioDeviceResolution resolution,
+        string? preferredKey,
+        string? preferredName,
+        Action<VoiceAudioDeviceInfo?> applyPreference)
+    {
+        ImGui.TextDisabled(label);
+        if (!ImGui.BeginCombo(comboId, resolution.DisplayName))
+        {
+            return;
+        }
+
+        var defaultSelected = this.IsWindowsDefaultVoiceDeviceSelected(preferredKey, preferredName) || resolution.SavedPreferenceMissing;
+        if (ImGui.Selectable("Windows Default", defaultSelected))
+        {
+            applyPreference(null);
+        }
+
+        if (defaultSelected)
+        {
+            ImGui.SetItemDefaultFocus();
+        }
+
+        foreach (var device in devices)
+        {
+            var selected = !defaultSelected
+                && (string.Equals(device.PreferenceKey, preferredKey, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(device.DisplayName, preferredName, StringComparison.OrdinalIgnoreCase));
+            if (ImGui.Selectable(device.DisplayName, selected))
+            {
+                applyPreference(device);
+            }
+
+            if (selected)
+            {
+                ImGui.SetItemDefaultFocus();
+            }
+        }
+
+        ImGui.EndCombo();
+    }
+
+    private void ApplyVoiceInputDevicePreference(VoiceAudioDeviceInfo? device)
+    {
+        this.ApplyVoiceDevicePreference(device, isInput: true);
+    }
+
+    private void ApplyVoiceOutputDevicePreference(VoiceAudioDeviceInfo? device)
+    {
+        this.ApplyVoiceDevicePreference(device, isInput: false);
+    }
+
+    private void ApplyVoiceDevicePreference(VoiceAudioDeviceInfo? device, bool isInput)
+    {
+        if (isInput)
+        {
+            this.configuration.PreferredVoiceInputDeviceKey = device?.PreferenceKey;
+            this.configuration.PreferredVoiceInputDeviceName = device?.DisplayName;
+        }
+        else
+        {
+            this.configuration.PreferredVoiceOutputDeviceKey = device?.PreferenceKey;
+            this.configuration.PreferredVoiceOutputDeviceName = device?.DisplayName;
+        }
+
+        var label = isInput ? "Voice input" : "Voice output";
+        var selectedDevice = device?.DisplayName ?? "Windows default";
+        this.pendingStatus = this.state.ActiveCall is null
+            ? $"{label} set to {selectedDevice}"
+            : $"{label} set to {selectedDevice}. Applies next call.";
+    }
+
+    private bool IsWindowsDefaultVoiceDeviceSelected(string? preferredKey, string? preferredName)
+    {
+        return string.IsNullOrWhiteSpace(preferredKey) && string.IsNullOrWhiteSpace(preferredName);
+    }
+
+    private static string? GetSavedVoiceDeviceMissingMessage(string kind, VoiceAudioDeviceResolution resolution)
+    {
+        if (!resolution.SavedPreferenceMissing)
+        {
+            return null;
+        }
+
+        return string.IsNullOrWhiteSpace(resolution.MissingDeviceName)
+            ? $"Saved {kind} device not found, using Windows default."
+            : $"Saved {kind} device \"{resolution.MissingDeviceName}\" not found, using Windows default.";
+    }
+
+    private static string? GetVoiceDeviceFallbackMessage(VoiceAudioDeviceResolution inputResolution, VoiceAudioDeviceResolution outputResolution)
+    {
+        if (inputResolution.SavedPreferenceMissing && outputResolution.SavedPreferenceMissing)
+        {
+            return "Saved voice devices not found, using Windows default.";
+        }
+
+        return GetSavedVoiceDeviceMissingMessage("input", inputResolution)
+            ?? GetSavedVoiceDeviceMissingMessage("output", outputResolution);
     }
 
     private void DismissNotificationsFor(Guid conversationId)
@@ -3617,9 +3822,7 @@ public sealed class PhoneWindow : Window
 
     private GameIdentityRecord? GetCurrentGameIdentity()
     {
-#pragma warning disable CS0618
-        var player = this.service.ObjectTable.LocalPlayer ?? this.service.ClientState.LocalPlayer;
-#pragma warning restore CS0618
+        var player = this.service.ObjectTable.LocalPlayer;
         if (player is null)
         {
             return null;
