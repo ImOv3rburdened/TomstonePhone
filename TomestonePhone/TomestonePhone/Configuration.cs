@@ -26,6 +26,20 @@ public sealed class Configuration : IPluginConfiguration
 
     public string? AuthToken { get; set; }
 
+    public string? PreferredVoiceInputDeviceKey { get; set; }
+
+    public string? PreferredVoiceInputDeviceName { get; set; }
+
+    public string? PreferredVoiceOutputDeviceKey { get; set; }
+
+    public string? PreferredVoiceOutputDeviceName { get; set; }
+
+    public bool ReduceVoiceBackgroundNoise { get; set; } = true;
+
+    public float VoiceMicVolume { get; set; } = 1f;
+
+    public float VoiceOutputVolume { get; set; } = 1f;
+
     public string? RememberedUsername { get; set; }
 
     public string? RememberedPasswordProtected { get; set; }

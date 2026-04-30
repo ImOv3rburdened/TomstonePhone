@@ -20,6 +20,7 @@ public sealed class VoiceChatSession : IDisposable
     private WaveInEvent? waveIn;
     private WaveOutEvent? waveOut;
     private MixingSampleProvider? mixer;
+    private VolumeSampleProvider? playbackVolumeProvider;
     private WaveFormat? waveFormat;
     private Guid sessionId;
     private Guid currentAccountId;
@@ -27,12 +28,31 @@ public sealed class VoiceChatSession : IDisposable
     private int frameMilliseconds = 20;
     private bool disposed;
     private bool isMuted;
+    private bool reduceBackgroundNoise;
+    private float highPassAlpha = 1f;
+    private float previousCaptureSample;
+    private float previousFilteredSample;
+    private float estimatedNoiseFloor = 120f;
+    private bool voiceGateOpen;
+    private int voiceGateHoldFrames;
+    private float micVolume = 1f;
+    private float outputVolume = 1f;
 
     public bool IsConnected { get; private set; }
 
     public Guid SessionId => this.sessionId;
 
-    public async Task StartAsync(string serverBaseUrl, string authToken, Guid accountId, ActiveCallState call, CancellationToken cancellationToken = default)
+    public async Task StartAsync(
+        string serverBaseUrl,
+        string authToken,
+        Guid accountId,
+        ActiveCallState call,
+        int inputDeviceNumber = -1,
+        int outputDeviceNumber = -1,
+        bool reduceBackgroundNoise = false,
+        float micVolume = 1f,
+        float outputVolume = 1f,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(serverBaseUrl);
         ArgumentException.ThrowIfNullOrWhiteSpace(authToken);
@@ -56,23 +76,32 @@ public sealed class VoiceChatSession : IDisposable
             this.sessionId = call.SessionId;
             this.currentAccountId = accountId;
             this.isMuted = call.IsMuted;
+            this.reduceBackgroundNoise = reduceBackgroundNoise;
+            this.micVolume = ClampVolume(micVolume);
+            this.outputVolume = ClampVolume(outputVolume);
+            this.ResetNoiseReductionState(sampleRate);
 
             this.mixer = new MixingSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels))
             {
                 ReadFully = true,
             };
+            this.playbackVolumeProvider = new VolumeSampleProvider(this.mixer)
+            {
+                Volume = this.outputVolume,
+            };
 
             this.waveOut = new WaveOutEvent
             {
+                DeviceNumber = outputDeviceNumber,
                 DesiredLatency = this.frameMilliseconds * 2,
                 NumberOfBuffers = 3,
             };
-            this.waveOut.Init(this.mixer.ToWaveProvider16());
+            this.waveOut.Init(this.playbackVolumeProvider.ToWaveProvider16());
             this.waveOut.Play();
 
             this.waveIn = new WaveInEvent
             {
-                DeviceNumber = -1,
+                DeviceNumber = inputDeviceNumber,
                 BufferMilliseconds = this.frameMilliseconds,
                 NumberOfBuffers = 3,
                 WaveFormat = this.waveFormat,
@@ -100,6 +129,20 @@ public sealed class VoiceChatSession : IDisposable
     public void SetMuted(bool muted)
     {
         this.isMuted = muted;
+    }
+
+    public void SetLevels(float micVolume, float outputVolume)
+    {
+        this.micVolume = ClampVolume(micVolume);
+        this.outputVolume = ClampVolume(outputVolume);
+
+        lock (this.syncRoot)
+        {
+            if (this.playbackVolumeProvider is not null)
+            {
+                this.playbackVolumeProvider.Volume = this.outputVolume;
+            }
+        }
     }
 
     public async Task StopAsync()
@@ -179,10 +222,15 @@ public sealed class VoiceChatSession : IDisposable
         }
 
         this.mixer = null;
+        this.playbackVolumeProvider = null;
         this.waveFormat = null;
         this.sessionId = Guid.Empty;
         this.currentAccountId = Guid.Empty;
         this.frameMilliseconds = 20;
+        this.reduceBackgroundNoise = false;
+        this.micVolume = 1f;
+        this.outputVolume = 1f;
+        this.ResetNoiseReductionState(16000);
     }
 
     public void Dispose()
@@ -264,9 +312,118 @@ public sealed class VoiceChatSession : IDisposable
                 Buffer.BlockCopy(this.captureAccumulator, 0, frame, 0, this.frameBytes);
                 Buffer.BlockCopy(this.captureAccumulator, this.frameBytes, this.captureAccumulator, 0, this.captureAccumulatorLength - this.frameBytes);
                 this.captureAccumulatorLength -= this.frameBytes;
-                _ = this.SendFrameAsync(frame);
+                var processedFrame = this.ProcessCapturedFrame(frame);
+                if (processedFrame is not null)
+                {
+                    _ = this.SendFrameAsync(processedFrame);
+                }
             }
         }
+    }
+
+    private byte[]? ProcessCapturedFrame(byte[] frame)
+    {
+        if (!this.reduceBackgroundNoise)
+        {
+            return frame;
+        }
+
+        const int bytesPerSample = 2;
+        if (frame.Length < bytesPerSample)
+        {
+            return frame;
+        }
+
+        var sumSquares = 0f;
+        var peak = 0f;
+        for (var offset = 0; offset < frame.Length; offset += bytesPerSample)
+        {
+            var sample = (short)(frame[offset] | (frame[offset + 1] << 8));
+            var amplifiedSample = sample * this.micVolume;
+            var filtered = this.highPassAlpha * (this.previousFilteredSample + amplifiedSample - this.previousCaptureSample);
+            this.previousCaptureSample = amplifiedSample;
+            this.previousFilteredSample = filtered;
+
+            var clamped = (short)Math.Clamp((int)MathF.Round(filtered), short.MinValue, short.MaxValue);
+            frame[offset] = (byte)(clamped & 0xFF);
+            frame[offset + 1] = (byte)((clamped >> 8) & 0xFF);
+
+            var magnitude = MathF.Abs(filtered);
+            peak = MathF.Max(peak, magnitude);
+            sumSquares += filtered * filtered;
+        }
+
+        var sampleCount = frame.Length / bytesPerSample;
+        var rms = sampleCount <= 0 ? 0f : MathF.Sqrt(sumSquares / sampleCount);
+        return this.ShouldSuppressFrame(rms, peak) ? null : frame;
+    }
+
+    private bool ShouldSuppressFrame(float rms, float peak)
+    {
+        const float minimumNoiseFloor = 80f;
+        if (this.estimatedNoiseFloor <= 0f)
+        {
+            this.estimatedNoiseFloor = MathF.Max(rms, minimumNoiseFloor);
+        }
+
+        var nearNoiseFloor = rms <= this.estimatedNoiseFloor * 1.35f;
+        if (!this.voiceGateOpen || nearNoiseFloor)
+        {
+            var targetNoiseFloor = Math.Clamp(rms, minimumNoiseFloor, 2000f);
+            this.estimatedNoiseFloor = (this.estimatedNoiseFloor * 0.92f) + (targetNoiseFloor * 0.08f);
+        }
+
+        var openThreshold = MathF.Max(this.estimatedNoiseFloor * 3.0f, 260f);
+        var closeThreshold = MathF.Max(this.estimatedNoiseFloor * 1.8f, 170f);
+        var openPeakThreshold = MathF.Max(openThreshold * 2.2f, 900f);
+        var closePeakThreshold = MathF.Max(closeThreshold * 2.0f, 700f);
+
+        var shouldOpen = rms >= openThreshold || peak >= openPeakThreshold;
+        if (shouldOpen)
+        {
+            this.voiceGateOpen = true;
+            this.voiceGateHoldFrames = 6;
+            return false;
+        }
+
+        if (this.voiceGateOpen)
+        {
+            var shouldStayOpen = rms >= closeThreshold || peak >= closePeakThreshold;
+            if (shouldStayOpen)
+            {
+                this.voiceGateHoldFrames = 6;
+                return false;
+            }
+
+            if (this.voiceGateHoldFrames > 0)
+            {
+                this.voiceGateHoldFrames--;
+                return false;
+            }
+        }
+
+        this.voiceGateOpen = false;
+        this.voiceGateHoldFrames = 0;
+        return true;
+    }
+
+    private void ResetNoiseReductionState(int sampleRate)
+    {
+        const float cutoffHz = 120f;
+        var safeSampleRate = Math.Max(sampleRate, 8000);
+        var dt = 1d / safeSampleRate;
+        var rc = 1d / (2d * Math.PI * cutoffHz);
+        this.highPassAlpha = (float)(rc / (rc + dt));
+        this.previousCaptureSample = 0f;
+        this.previousFilteredSample = 0f;
+        this.estimatedNoiseFloor = 120f;
+        this.voiceGateOpen = false;
+        this.voiceGateHoldFrames = 0;
+    }
+
+    private static float ClampVolume(float value)
+    {
+        return Math.Clamp(value, 0.25f, 3f);
     }
 
     private void OnRecordingStopped(object? sender, StoppedEventArgs args)
