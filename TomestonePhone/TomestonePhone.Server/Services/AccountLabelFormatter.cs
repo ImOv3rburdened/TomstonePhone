@@ -55,18 +55,14 @@ internal static class AccountLabelFormatter
     {
         if (string.IsNullOrWhiteSpace(lookup))
         {
-            throw new InvalidOperationException("Enter a username, phone number, or character name.");
+            throw new InvalidOperationException("Enter a TomestonePhone username or phone number.");
         }
 
         var trimmedLookup = lookup.Trim();
         var exactMatches = accounts
             .Where(item =>
                 item.Username.Equals(trimmedLookup, StringComparison.OrdinalIgnoreCase)
-                || item.PhoneNumber.Equals(trimmedLookup, StringComparison.OrdinalIgnoreCase)
-                || item.DisplayName.Equals(trimmedLookup, StringComparison.OrdinalIgnoreCase)
-                || (item.LastKnownGameIdentity is not null && (
-                    item.LastKnownGameIdentity.CharacterName.Equals(trimmedLookup, StringComparison.OrdinalIgnoreCase)
-                    || item.LastKnownGameIdentity.FullHandle.Equals(trimmedLookup, StringComparison.OrdinalIgnoreCase))))
+                || item.PhoneNumber.Equals(trimmedLookup, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         if (exactMatches.Count == 1)
@@ -79,7 +75,7 @@ internal static class AccountLabelFormatter
             throw new InvalidOperationException("More than one account matched that name. Use the username or phone number instead.");
         }
 
-        throw new InvalidOperationException("No account matched that username, phone number, or character name.");
+        throw new InvalidOperationException("No account matched that TomestonePhone username or phone number.");
     }
 
     private static string GetBaseDisplayName(PersistedAccount account)

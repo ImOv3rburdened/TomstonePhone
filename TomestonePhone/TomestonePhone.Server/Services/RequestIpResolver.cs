@@ -4,6 +4,12 @@ public static class RequestIpResolver
 {
     public static string Resolve(HttpContext context)
     {
+        var cloudflareConnectingIp = context.Request.Headers["CF-Connecting-IP"].ToString();
+        if (!string.IsNullOrWhiteSpace(cloudflareConnectingIp))
+        {
+            return cloudflareConnectingIp.Trim();
+        }
+
         var forwarded = context.Request.Headers["X-Forwarded-For"].ToString();
         if (!string.IsNullOrWhiteSpace(forwarded))
         {

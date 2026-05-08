@@ -132,6 +132,10 @@ public sealed class PhoneWindow : Window
     private bool clientRecommendedNoticeShown;
     private DateTimeOffset? startupSplashStartedUtc;
     private bool startupSplashCompleted;
+    private readonly GroupMembersOverlayWindow groupMembersOverlayWindow;
+    private readonly NotificationOverlayWindow notificationOverlayWindow;
+    private readonly CallOverlayWindow callOverlayWindow;
+    private Guid? callOverlaySessionId;
     private IReadOnlyList<VoiceAudioDeviceInfo> voiceInputDevices = [];
     private IReadOnlyList<VoiceAudioDeviceInfo> voiceOutputDevices = [];
     private DateTimeOffset lastVoiceDeviceRefreshUtc = DateTimeOffset.MinValue;
@@ -155,6 +159,16 @@ public sealed class PhoneWindow : Window
         this.SizeCondition = ImGuiCond.FirstUseEver;
         this.lastWindowSize = new Vector2(DefaultWindowWidth * MinimumWindowScale, DefaultWindowHeight * MinimumWindowScale);
         this.RespectCloseHotkey = true;
+        this.groupMembersOverlayWindow = new GroupMembersOverlayWindow(this);
+        this.notificationOverlayWindow = new NotificationOverlayWindow(this);
+        this.callOverlayWindow = new CallOverlayWindow(this);
+    }
+
+    public void RegisterOverlayWindows(WindowSystem windows)
+    {
+        windows.AddWindow(this.groupMembersOverlayWindow);
+        windows.AddWindow(this.notificationOverlayWindow);
+        windows.AddWindow(this.callOverlayWindow);
     }
 
     public void OpenSettingsTab()
@@ -175,6 +189,13 @@ public sealed class PhoneWindow : Window
         this.clientUpdateNoticeShown = false;
         this.clientRecommendedNoticeShown = false;
         this.pendingVersionPolicyTask = null;
+    }
+
+    public override void OnClose()
+    {
+        this.groupMembersOverlayWindow.IsOpen = false;
+        this.notificationOverlayWindow.IsOpen = false;
+        this.callOverlayWindow.IsOpen = false;
     }
 
     public void DisposeResources()
@@ -313,7 +334,7 @@ public sealed class PhoneWindow : Window
             return;
         }
 
-        this.DrawNotifications();
+        this.SyncNotificationWindow();
         this.DrawLegalModal();
         this.DrawPrivacyModal();
         this.DrawOpenEmoteSetupModal();
@@ -325,7 +346,7 @@ public sealed class PhoneWindow : Window
             return;
         }
 
-        this.DrawCallBanner();
+        this.SyncCallWindow();
         this.DrawHeader();
         ImGui.Separator();
 
@@ -875,7 +896,7 @@ public sealed class PhoneWindow : Window
                         ImGui.SameLine();
                         if (this.DrawPhonePillButton("Members", new Vector2(this.Scale(118f), this.Scale(32f))))
                         {
-                            this.showGroupMembersWindow = true;
+                            this.OpenGroupMembersWindow(selectedId);
                         }
                     }
 
@@ -889,7 +910,11 @@ public sealed class PhoneWindow : Window
 
                     if (canOpenMembers)
                     {
-                        this.DrawGroupMembersWindow(selectedId);
+                        this.UpdateGroupMembersWindowState(selectedId);
+                    }
+                    else
+                    {
+                        this.groupMembersOverlayWindow.IsOpen = false;
                     }
 
                     var linkedTicketId = this.selectedConversationDetail.LinkedSupportTicketId;
@@ -2294,6 +2319,14 @@ public sealed class PhoneWindow : Window
             this.SaveConfiguration();
         }
         ImGui.TextColored(new Vector4(0.96f, 0.74f, 0.33f, 1f), "Warning: This is an automation and is often frowned upon. Use at your own risk.");
+        var shareGameIdentity = this.configuration.ShareGameIdentity;
+        if (ImGui.Checkbox("Share current character/world as display name", ref shareGameIdentity))
+        {
+            this.configuration.ShareGameIdentity = shareGameIdentity;
+            this.SaveConfiguration();
+            this.SyncGameIdentityPreference();
+        }
+        ImGui.TextDisabled("Optional. This sends your character name and world to the configured backend for display names only.");
         var muted = this.state.CurrentProfile.NotificationsMuted;
         if (ImGui.Checkbox("Mute notifications", ref muted))
         {
@@ -2575,10 +2608,44 @@ public sealed class PhoneWindow : Window
         }
     }
 
-    private void DrawGroupMembersWindow(Guid conversationId)
+    private void OpenGroupMembersWindow(Guid conversationId)
+    {
+        if (this.selectedConversationDetail is not { IsGroup: true } detail)
+        {
+            this.groupMembersOverlayWindow.IsOpen = false;
+            return;
+        }
+
+        this.showGroupMembersWindow = true;
+        this.groupMembersOverlayWindow.ConversationId = conversationId;
+        this.groupMembersOverlayWindow.WindowName = $"Members - {detail.Name}###group-members-{conversationId}";
+        this.groupMembersOverlayWindow.IsOpen = true;
+    }
+
+    private void UpdateGroupMembersWindowState(Guid conversationId)
     {
         if (!this.showGroupMembersWindow || this.selectedConversationDetail is not { IsGroup: true } detail)
         {
+            this.groupMembersOverlayWindow.IsOpen = false;
+            return;
+        }
+
+        if (!this.groupMembersOverlayWindow.IsOpen)
+        {
+            this.showGroupMembersWindow = false;
+            return;
+        }
+
+        this.groupMembersOverlayWindow.ConversationId = conversationId;
+        this.groupMembersOverlayWindow.WindowName = $"Members - {detail.Name}###group-members-{conversationId}";
+    }
+
+    private void DrawGroupMembersWindowContent(Guid conversationId)
+    {
+        if (this.selectedConversationDetail is not { IsGroup: true } detail)
+        {
+            this.groupMembersOverlayWindow.IsOpen = false;
+            this.showGroupMembersWindow = false;
             return;
         }
 
@@ -2586,19 +2653,14 @@ public sealed class PhoneWindow : Window
         var isStandardGroup = detail.LinkedSupportTicketId is null;
         var allowRosterEdits = ownsConversation && detail.IsViewerActive && !detail.IsReadOnly && isStandardGroup;
         var allowMemberInviteRequests = !ownsConversation && detail.IsViewerActive && !detail.IsReadOnly && isStandardGroup;
-        var membersWindowOpen = true;
-        ImGui.SetNextWindowPos(this.GetPhoneWindowCenter(), ImGuiCond.Always, new Vector2(0.5f, 0.5f));
-        ImGui.SetNextWindowSize(this.Scale(480f, 540f), ImGuiCond.Always);
-        if (ImGui.Begin($"Members - {detail.Name}###group-members-{conversationId}", ref membersWindowOpen, ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoResize))
-        {
-            ImGui.TextDisabled(allowRosterEdits
-                ? "Manage the roster for this group chat and its future group calls."
-                : allowMemberInviteRequests
-                    ? "Pick one of your contacts and the owner can approve them for this group."
-                : detail.IsReadOnly
-                    ? "This group is closed. The roster stays visible for reference."
-                    : "Only the group owner can change the roster.");
-            ImGui.Separator();
+        ImGui.TextDisabled(allowRosterEdits
+            ? "Manage the roster for this group chat and its future group calls."
+            : allowMemberInviteRequests
+                ? "Pick one of your contacts and the owner can approve them for this group."
+            : detail.IsReadOnly
+                ? "This group is closed. The roster stays visible for reference."
+                : "Only the group owner can change the roster.");
+        ImGui.Separator();
 
             if (detail.PendingMemberRequests.Count > 0)
             {
@@ -2832,10 +2894,6 @@ public sealed class PhoneWindow : Window
                     ImGui.CloseCurrentPopup();
                 }
             }
-        }
-
-        ImGui.End();
-        this.showGroupMembersWindow = membersWindowOpen;
     }
 
     private string GetSelectedConversationStatusLine()
@@ -3388,10 +3446,11 @@ public sealed class PhoneWindow : Window
 
         if (hoveredIssue is not null)
         {
-            ImGui.BeginTooltip();
-            ImGui.TextUnformatted($"Spelling suggestions for \"{hoveredIssue.OriginalText}\"");
-            ImGui.TextDisabled("Click or right-click the underline to choose a replacement.");
-            ImGui.EndTooltip();
+            using (var tooltip = ImRaii.Tooltip())
+            {
+                ImGui.TextUnformatted($"Spelling suggestions for \"{hoveredIssue.OriginalText}\"");
+                ImGui.TextDisabled("Click or right-click the underline to choose a replacement.");
+            }
 
             if (ImGui.IsMouseReleased(ImGuiMouseButton.Left) || ImGui.IsMouseReleased(ImGuiMouseButton.Right))
             {
@@ -3633,6 +3692,31 @@ public sealed class PhoneWindow : Window
     private void RefreshSnapshot(bool silent = false)
     {
         this.QueueSnapshotRefresh(silent);
+    }
+
+    private void SyncGameIdentityPreference()
+    {
+        if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+        {
+            return;
+        }
+
+        var identity = this.GetCurrentGameIdentity();
+        try
+        {
+            var request = identity is null
+                ? new UpdateGameIdentityRequest(string.Empty, string.Empty)
+                : new UpdateGameIdentityRequest(identity.CharacterName, identity.WorldName);
+            this.state.CurrentProfile = this.client.UpdateGameIdentityAsync(this.configuration.AuthToken, request).GetAwaiter().GetResult();
+            this.pendingStatus = identity is null
+                ? "Character/world sharing disabled"
+                : "Character/world sharing enabled";
+            this.RefreshSnapshot(true);
+        }
+        catch (Exception ex)
+        {
+            this.pendingStatus = this.SanitizeUserFacingError(ex.Message);
+        }
     }
 
     private void QueueSnapshotRefresh(bool silent = false)
@@ -3879,13 +3963,19 @@ public sealed class PhoneWindow : Window
         draw.AddRectFilled(visualPos, visualPos + visualSize, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.78f)), 999f);
     }
 
-    private void DrawNotifications()
+    private void SyncNotificationWindow()
     {
         if (this.state.Notifications.Count == 0)
         {
+            this.notificationOverlayWindow.IsOpen = false;
             return;
         }
 
+        this.notificationOverlayWindow.IsOpen = true;
+    }
+
+    private void PrepareNotificationWindow()
+    {
         var viewport = ImGui.GetMainViewport();
         var windowSize = new Vector2(280f, 96f);
         var anchorPos = this.configuration.NotificationAnchor switch
@@ -3900,61 +3990,74 @@ public sealed class PhoneWindow : Window
         ImGui.SetNextWindowBgAlpha(0.92f);
         ImGui.SetNextWindowPos(anchorPos, ImGuiCond.Always);
         ImGui.SetNextWindowSize(windowSize, ImGuiCond.Always);
-
-        if (ImGui.Begin("TomestonePhoneNotification", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoMove))
-        {
-            ImGui.TextUnformatted(notification.Title);
-            ImGui.TextWrapped(notification.Body);
-
-            if (ImGui.Button("Open", new Vector2(90f, 26f)))
-            {
-                this.IsOpen = true;
-                this.showHomeScreen = false;
-                this.activeTab = notification.Tab;
-                if (notification.IsIncomingCall && this.state.ActiveCall is not null)
-                {
-                    this.BeginConversationCall(this.state.ActiveCall.ConversationId, this.state.ActiveCall.IsGroup);
-                }
-
-                this.state.Notifications.RemoveAt(0);
-            }
-
-            ImGui.SameLine();
-
-            if (ImGui.Button("Dismiss", new Vector2(90f, 26f)))
-            {
-                this.state.Notifications.RemoveAt(0);
-            }
-        }
-
-        ImGui.End();
     }
 
-    private void DrawCallBanner()
+    private void DrawNotificationWindowContent()
+    {
+        if (this.state.Notifications.Count == 0)
+        {
+            this.notificationOverlayWindow.IsOpen = false;
+            return;
+        }
+
+        var notification = this.state.Notifications[0];
+        ImGui.TextUnformatted(notification.Title);
+        ImGui.TextWrapped(notification.Body);
+
+        if (ImGui.Button("Open", new Vector2(90f, 26f)))
+        {
+            this.IsOpen = true;
+            this.showHomeScreen = false;
+            this.activeTab = notification.Tab;
+            if (notification.IsIncomingCall && this.state.ActiveCall is not null)
+            {
+                this.BeginConversationCall(this.state.ActiveCall.ConversationId, this.state.ActiveCall.IsGroup);
+            }
+
+            this.state.Notifications.RemoveAt(0);
+        }
+
+        ImGui.SameLine();
+
+        if (ImGui.Button("Dismiss", new Vector2(90f, 26f)))
+        {
+            this.state.Notifications.RemoveAt(0);
+        }
+    }
+
+    private void SyncCallWindow()
+    {
+        if (this.state.ActiveCall is not { } call)
+        {
+            this.callOverlayWindow.IsOpen = false;
+            this.callOverlaySessionId = null;
+            return;
+        }
+
+        if (this.callOverlaySessionId != call.ConversationId)
+        {
+            this.callOverlaySessionId = call.ConversationId;
+            this.callOverlayWindow.IsOpen = true;
+        }
+    }
+
+    private void PrepareCallWindow()
+    {
+        var center = ImGui.GetMainViewport().GetCenter();
+        ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
+        ImGui.SetNextWindowSize(this.Scale(320f, 286f), ImGuiCond.Appearing);
+    }
+
+    private void DrawCallWindowContent()
     {
         if (this.state.ActiveCall is null)
         {
+            this.callOverlayWindow.IsOpen = false;
+            this.callOverlaySessionId = null;
             return;
         }
 
         var call = this.state.ActiveCall;
-        var center = ImGui.GetMainViewport().GetCenter();
-        ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
-        ImGui.SetNextWindowSize(this.Scale(320f, 286f), ImGuiCond.Always);
-        var open = true;
-        if (!ImGui.Begin("Call###TomestonePhoneCallPopup", ref open, ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings))
-        {
-            ImGui.End();
-            return;
-        }
-
-        if (!open)
-        {
-            this.LeaveCurrentCall();
-            ImGui.End();
-            return;
-        }
-
         ImGui.TextUnformatted(call.IsIncoming ? $"Incoming Call: {call.Title}" : call.Title);
         var elapsed = call.IsIncoming ? "Ringing..." : (DateTimeOffset.UtcNow - call.StartedUtc).ToString(@"hh\:mm\:ss");
         ImGui.TextDisabled(elapsed);
@@ -3981,7 +4084,6 @@ public sealed class PhoneWindow : Window
             if (ImGui.Button("Accept", new Vector2(actionWidth, this.Scale(34f))))
             {
                 this.BeginConversationCall(call.ConversationId, call.IsGroup);
-                ImGui.End();
                 return;
             }
             ImGui.SameLine();
@@ -4007,8 +4109,6 @@ public sealed class PhoneWindow : Window
                 this.LeaveCurrentCall();
             }
         }
-
-        ImGui.End();
     }
 
     private void DrawCopyableText(string text, string copiedValue, string copiedStatus, bool disabled = false)
@@ -4043,7 +4143,8 @@ public sealed class PhoneWindow : Window
     {
         ImGui.TextDisabled("Notification Spot");
         var anchor = this.configuration.NotificationAnchor;
-        if (ImGui.BeginCombo("##NotificationSpot", anchor.ToString()))
+        using var combo = ImRaii.Combo("##NotificationSpot", anchor.ToString());
+        if (combo.Success)
         {
             foreach (NotificationAnchor value in Enum.GetValues(typeof(NotificationAnchor)))
             {
@@ -4058,8 +4159,6 @@ public sealed class PhoneWindow : Window
                     ImGui.SetItemDefaultFocus();
                 }
             }
-
-            ImGui.EndCombo();
         }
     }
 
@@ -4086,7 +4185,8 @@ public sealed class PhoneWindow : Window
         Action<VoiceAudioDeviceInfo?> applyPreference)
     {
         ImGui.TextDisabled(label);
-        if (!ImGui.BeginCombo(comboId, resolution.DisplayName))
+        using var combo = ImRaii.Combo(comboId, resolution.DisplayName);
+        if (!combo.Success)
         {
             return;
         }
@@ -4117,8 +4217,6 @@ public sealed class PhoneWindow : Window
                 ImGui.SetItemDefaultFocus();
             }
         }
-
-        ImGui.EndCombo();
     }
 
     private void ApplyVoiceInputDevicePreference(VoiceAudioDeviceInfo? device)
@@ -5192,6 +5290,11 @@ public sealed class PhoneWindow : Window
 
     private GameIdentityRecord? GetCurrentGameIdentity()
     {
+        if (!this.configuration.ShareGameIdentity)
+        {
+            return null;
+        }
+
         var player = this.service.ObjectTable.LocalPlayer;
         if (player is null)
         {
@@ -5655,11 +5758,14 @@ public sealed class PhoneWindow : Window
         {
             var snapshot = await this.client.GetSnapshotAsync(authToken).ConfigureAwait(false);
             PhoneProfile? profile = null;
-            if (identity is not null)
+            if (identity is not null || snapshot.Profile.LastKnownGameIdentity is not null)
             {
                 try
                 {
-                    profile = await this.client.UpdateGameIdentityAsync(authToken, new UpdateGameIdentityRequest(identity.CharacterName, identity.WorldName)).ConfigureAwait(false);
+                    var request = identity is null
+                        ? new UpdateGameIdentityRequest(string.Empty, string.Empty)
+                        : new UpdateGameIdentityRequest(identity.CharacterName, identity.WorldName);
+                    profile = await this.client.UpdateGameIdentityAsync(authToken, request).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -5680,6 +5786,92 @@ public sealed class PhoneWindow : Window
         public string Text { get; set; } = string.Empty;
 
         public SpellCheckAnalysis Analysis { get; set; } = SpellCheckAnalysis.Empty;
+    }
+
+    private sealed class GroupMembersOverlayWindow : Window
+    {
+        private readonly PhoneWindow parent;
+
+        public GroupMembersOverlayWindow(PhoneWindow parent)
+            : base("Members###TomestonePhoneGroupMembers")
+        {
+            this.parent = parent;
+            this.Flags = ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoResize;
+            this.IsOpen = false;
+            this.RespectCloseHotkey = false;
+        }
+
+        public Guid ConversationId { get; set; }
+
+        public override void PreDraw()
+        {
+            ImGui.SetNextWindowPos(this.parent.GetPhoneWindowCenter(), ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
+            ImGui.SetNextWindowSize(this.parent.Scale(480f, 540f), ImGuiCond.Appearing);
+        }
+
+        public override void Draw()
+        {
+            this.parent.DrawGroupMembersWindowContent(this.ConversationId);
+        }
+
+        public override void OnClose()
+        {
+            this.parent.showGroupMembersWindow = false;
+        }
+    }
+
+    private sealed class NotificationOverlayWindow : Window
+    {
+        private readonly PhoneWindow parent;
+
+        public NotificationOverlayWindow(PhoneWindow parent)
+            : base("TomestonePhoneNotification")
+        {
+            this.parent = parent;
+            this.Flags = ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoMove;
+            this.IsOpen = false;
+            this.RespectCloseHotkey = false;
+        }
+
+        public override void PreDraw()
+        {
+            this.parent.PrepareNotificationWindow();
+        }
+
+        public override void Draw()
+        {
+            this.parent.DrawNotificationWindowContent();
+        }
+    }
+
+    private sealed class CallOverlayWindow : Window
+    {
+        private readonly PhoneWindow parent;
+
+        public CallOverlayWindow(PhoneWindow parent)
+            : base("Call###TomestonePhoneCallPopup")
+        {
+            this.parent = parent;
+            this.Flags = ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings;
+            this.IsOpen = false;
+            this.RespectCloseHotkey = false;
+        }
+
+        public override void PreDraw()
+        {
+            this.parent.PrepareCallWindow();
+        }
+
+        public override void Draw()
+        {
+            this.parent.DrawCallWindowContent();
+        }
+
+        public override void OnClose()
+        {
+            this.parent.callOverlaySessionId = null;
+            this.parent.LeaveCurrentCall();
+        }
     }
 
     private sealed record AuthResult(string? Username, string? AuthToken, string? StatusMessage, Exception? Error);

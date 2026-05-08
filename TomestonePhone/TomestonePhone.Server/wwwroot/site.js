@@ -8,7 +8,7 @@ const authStatus = document.getElementById("authStatus");
 const termsText = document.getElementById("termsText");
 const privacyText = document.getElementById("privacyText");
 const legalTermsVersion = "2026-03-20";
-const privacyPolicyVersion = "2026-03-20";
+const privacyPolicyVersion = "2026-05-08";
 
 const legalTermsBody = `TomestonePhone User Agreement and Liability Notice
 
@@ -22,13 +22,17 @@ const legalTermsBody = `TomestonePhone User Agreement and Liability Notice
 
 const privacyPolicyBody = `TomestonePhone Privacy Policy
 
-1. We collect your username, password hash, assigned phone number, role, and account status to run the service.
-2. We store messages, support tickets, moderation reports, and audit logs to deliver features, investigate abuse, and preserve records.
-3. We log IP addresses for account security, abuse prevention, bans, unlawful-content investigations, and legal compliance.
-4. User-hosted chat image uploads are disabled. External links shared in messages may still be reviewed through message and moderation records.
-5. Records may be retained even when user-facing access changes.
-6. Relevant data may be disclosed when required for safety response, legal process, or reporting obligations.
-7. If you do not agree, do not register or use the service.`;
+1. TomestonePhone connects to the configured backend server using HTTPS and a DNS hostname. If you use a custom server, your TomestonePhone data goes to that server instead of the maintainer-run server.
+2. We collect your TomestonePhone username, password hash, assigned phone number, account role, status, notification settings, and related account metadata to operate the service.
+3. If you enable character/world sharing in Settings, the plugin may send your current character name and world to support user-facing display names in chats, calls, contacts, and friends lists. It does not send your Content ID, and accounts are not discoverable by character name.
+4. We store messages, chat participation, contacts, friend requests, call records, support tickets, moderation reports, audit logs, and related records to provide features, investigate abuse, and preserve operational and legal records.
+5. Voice calls relay live audio packets through the backend while you are in an active call. TomestonePhone does not intentionally record or store call audio.
+6. We collect and retain IP addresses and related access data for account security, abuse prevention, moderation, bans, unlawful-content investigations, and legal compliance.
+7. The plugin does not collect analytics or telemetry. If analytics are added later, they will require explicit opt-in before collection.
+8. The service does not host user-uploaded chat images. If you share external links, related message and moderation records may still be reviewed and retained.
+9. Records may be retained even when user-facing access changes.
+10. Relevant data may be disclosed when required for safety response, legal process, or reporting obligations.
+11. If you do not agree, do not register or use the service.`;
 
 termsText.textContent = legalTermsBody;
 privacyText.textContent = privacyPolicyBody;

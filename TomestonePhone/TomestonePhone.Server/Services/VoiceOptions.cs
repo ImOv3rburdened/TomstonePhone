@@ -12,11 +12,11 @@ public sealed class VoiceOptions
 
     public int UdpPort { get; set; } = 64738;
 
-    public string QualityLabel { get; set; } = "Aether Voice (Low Bandwidth)";
+    public string QualityLabel { get; set; } = "Aether Voice (Opus Low Bandwidth)";
 
     public int SampleRateHz { get; set; } = 16000;
 
-    public int BitrateKbps { get; set; } = 16;
+    public int BitrateKbps { get; set; } = 24;
 
     public int FrameSizeMs { get; set; } = 20;
 }

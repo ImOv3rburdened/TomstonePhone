@@ -40,6 +40,18 @@ public sealed class GifEmbedRenderer : IDisposable
             case GifLoadStatus.Loading:
                 ImGui.TextDisabled("Loading GIF...");
                 return;
+            case GifLoadStatus.Decoded:
+                state.TryCreateTextures(this.textureProvider);
+                if (state.Status != GifLoadStatus.Ready)
+                {
+                    ImGui.TextDisabled(state.Status == GifLoadStatus.Failed ? "GIF unavailable" : "Loading GIF...");
+                    return;
+                }
+
+                var decodedFrame = state.GetCurrentFrame(animate);
+                var decodedSize = this.GetScaledSize(decodedFrame.Wrap.Width, decodedFrame.Wrap.Height, maxWidth);
+                ImGui.Image(decodedFrame.Wrap.Handle, decodedSize);
+                return;
             case GifLoadStatus.Failed:
                 ImGui.TextDisabled("GIF unavailable");
                 return;
@@ -70,20 +82,19 @@ public sealed class GifEmbedRenderer : IDisposable
         {
             using var stream = await HttpClient.GetStreamAsync(url).ConfigureAwait(false);
             using var image = await Image.LoadAsync<Rgba32>(stream).ConfigureAwait(false);
-            var frames = new List<GifFrameTexture>(image.Frames.Count);
+            var frames = new List<GifFrameData>(image.Frames.Count);
 
             for (var index = 0; index < image.Frames.Count; index++)
             {
                 using var frameImage = image.Frames.CloneFrame(index);
                 using var output = new MemoryStream();
                 await frameImage.SaveAsPngAsync(output).ConfigureAwait(false);
-                var wrap = await this.textureProvider.CreateFromImageAsync(output.ToArray()).ConfigureAwait(false);
                 var metadata = frameImage.Frames.RootFrame.Metadata.GetGifMetadata();
                 var delay = Math.Max(0.06f, metadata.FrameDelay / 100f);
-                frames.Add(new GifFrameTexture(wrap, delay));
+                frames.Add(new GifFrameData(output.ToArray(), delay));
             }
 
-            state.SetFrames(frames);
+            state.SetDecodedFrames(frames);
         }
         catch
         {
@@ -105,6 +116,7 @@ public sealed class GifEmbedRenderer : IDisposable
     private enum GifLoadStatus
     {
         Loading,
+        Decoded,
         Ready,
         Failed,
     }
@@ -114,6 +126,7 @@ public sealed class GifEmbedRenderer : IDisposable
         private int currentFrameIndex;
         private DateTime nextFrameUtc = DateTime.UtcNow;
         private int loadStarted;
+        private List<GifFrameData>? decodedFrames;
 
         public GifLoadStatus Status { get; private set; } = GifLoadStatus.Loading;
 
@@ -149,6 +162,38 @@ public sealed class GifEmbedRenderer : IDisposable
             return this.Frames[this.currentFrameIndex];
         }
 
+        public void SetDecodedFrames(List<GifFrameData> frames)
+        {
+            this.decodedFrames = frames;
+            this.Status = GifLoadStatus.Decoded;
+        }
+
+        public void TryCreateTextures(ITextureProvider textureProvider)
+        {
+            if (this.Status != GifLoadStatus.Decoded || this.decodedFrames is null)
+            {
+                return;
+            }
+
+            try
+            {
+                foreach (var frame in this.decodedFrames)
+                {
+                    var wrap = textureProvider.CreateFromImageAsync(frame.PngBytes).GetAwaiter().GetResult();
+                    this.Frames.Add(new GifFrameTexture(wrap, frame.DelaySeconds));
+                }
+
+                this.decodedFrames = null;
+                this.currentFrameIndex = 0;
+                this.nextFrameUtc = DateTime.UtcNow.AddSeconds(this.Frames[0].DelaySeconds);
+                this.Status = GifLoadStatus.Ready;
+            }
+            catch
+            {
+                this.SetFailed();
+            }
+        }
+
         public void SetFrames(List<GifFrameTexture> frames)
         {
             this.Frames.AddRange(frames);
@@ -164,6 +209,7 @@ public sealed class GifEmbedRenderer : IDisposable
 
         public void Dispose()
         {
+            this.decodedFrames = null;
             foreach (var frame in this.Frames)
             {
                 frame.Dispose();
@@ -172,6 +218,8 @@ public sealed class GifEmbedRenderer : IDisposable
             this.Frames.Clear();
         }
     }
+
+    private sealed record GifFrameData(byte[] PngBytes, float DelaySeconds);
 
     private sealed class GifFrameTexture : IDisposable
     {

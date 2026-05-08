@@ -32,7 +32,10 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("TomestonePhone", policy =>
     {
-        policy.AllowAnyHeader().AllowAnyMethod().AllowCredentials().SetIsOriginAllowed(_ => true);
+        policy
+            .WithOrigins("https://tomephone.cc", "https://www.tomephone.cc")
+            .AllowAnyHeader()
+            .AllowAnyMethod();
     });
 });
 builder.Services.AddSignalR();

@@ -56,6 +56,7 @@ public sealed class Plugin : IDalamudPlugin
         this.phoneWindow = new PhoneWindow(this.service, this.configuration, this.state, this.client);
 
         this.windows.AddWindow(this.phoneWindow);
+        this.phoneWindow.RegisterOverlayWindows(this.windows);
 
         this.service.PluginInterface.UiBuilder.DisableGposeUiHide = true;
 
