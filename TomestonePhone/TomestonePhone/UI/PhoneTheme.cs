@@ -9,7 +9,7 @@ public sealed class PhoneTheme : IDisposable
 {
     private readonly List<IDisposable> scopes = [];
 
-    public static PhoneTheme Push(Configuration configuration)
+    public static PhoneTheme Push(Configuration configuration, float uiScale)
     {
         var accent = ParseColor(configuration.AccentColorHex, new Vector4(0.87f, 0.73f, 0.46f, 1f));
         var window = new Vector4(0.035f, 0.045f, 0.07f, 0.84f);
@@ -22,16 +22,16 @@ public sealed class PhoneTheme : IDisposable
         var muted = new Vector4(0.67f, 0.72f, 0.8f, 1f);
 
         var theme = new PhoneTheme();
-        theme.PushStyle(ImGuiStyleVar.WindowRounding, 38f);
-        theme.PushStyle(ImGuiStyleVar.ChildRounding, 26f);
-        theme.PushStyle(ImGuiStyleVar.FrameRounding, 18f);
-        theme.PushStyle(ImGuiStyleVar.PopupRounding, 24f);
-        theme.PushStyle(ImGuiStyleVar.GrabRounding, 18f);
-        theme.PushStyle(ImGuiStyleVar.ScrollbarRounding, 18f);
-        theme.PushStyle(ImGuiStyleVar.WindowPadding, new Vector2(22f, 18f));
-        theme.PushStyle(ImGuiStyleVar.FramePadding, new Vector2(14f, 8f));
-        theme.PushStyle(ImGuiStyleVar.ItemSpacing, new Vector2(12f, 12f));
-        theme.PushStyle(ImGuiStyleVar.ScrollbarSize, 8f);
+        theme.PushStyle(ImGuiStyleVar.WindowRounding, 38f * uiScale);
+        theme.PushStyle(ImGuiStyleVar.ChildRounding, 26f * uiScale);
+        theme.PushStyle(ImGuiStyleVar.FrameRounding, 18f * uiScale);
+        theme.PushStyle(ImGuiStyleVar.PopupRounding, 24f * uiScale);
+        theme.PushStyle(ImGuiStyleVar.GrabRounding, 18f * uiScale);
+        theme.PushStyle(ImGuiStyleVar.ScrollbarRounding, 18f * uiScale);
+        theme.PushStyle(ImGuiStyleVar.WindowPadding, new Vector2(22f * uiScale, 18f * uiScale));
+        theme.PushStyle(ImGuiStyleVar.FramePadding, new Vector2(14f * uiScale, 10f * uiScale));
+        theme.PushStyle(ImGuiStyleVar.ItemSpacing, new Vector2(12f * uiScale, 12f * uiScale));
+        theme.PushStyle(ImGuiStyleVar.ScrollbarSize, 8f * uiScale);
         theme.PushStyle(ImGuiStyleVar.ChildBorderSize, 0f);
         theme.PushStyle(ImGuiStyleVar.FrameBorderSize, 0f);
         theme.PushStyle(ImGuiStyleVar.ButtonTextAlign, new Vector2(0.5f, 0.5f));

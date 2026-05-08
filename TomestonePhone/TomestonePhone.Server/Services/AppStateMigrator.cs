@@ -5,7 +5,7 @@ namespace TomestonePhone.Server.Services;
 
 public static class AppStateMigrator
 {
-    public const int LatestSchemaVersion = 10;
+    public const int LatestSchemaVersion = 12;
 
     public static bool Migrate(PersistedAppState state)
     {
@@ -64,6 +64,8 @@ public static class AppStateMigrator
             7 => ApplyMigration8(state),
             8 => ApplyMigration9(state),
             9 => ApplyMigration10(state),
+            10 => ApplyMigration11(state),
+            11 => ApplyMigration12(state),
             _ => false,
         };
     }
@@ -248,6 +250,43 @@ public static class AppStateMigrator
         }
 
         state.SchemaVersion = 10;
+        return true;
+    }
+
+    private static bool ApplyMigration11(PersistedAppState state)
+    {
+        foreach (var conversation in state.Conversations)
+        {
+            conversation.ClosedAtUtc ??= null;
+            conversation.DeletedAtUtc ??= null;
+            conversation.Members ??= [];
+            conversation.PendingMemberRequests ??= [];
+
+            foreach (var member in conversation.Members)
+            {
+                member.RemovedAtUtc ??= null;
+                member.HiddenAtUtc ??= null;
+            }
+        }
+
+        state.SchemaVersion = 11;
+        return true;
+    }
+
+    private static bool ApplyMigration12(PersistedAppState state)
+    {
+        foreach (var conversation in state.Conversations)
+        {
+            conversation.PendingMemberRequests ??= [];
+            conversation.PendingMemberRequests = conversation.PendingMemberRequests
+                .Where(request => request.TargetAccountId != Guid.Empty && request.RequestedByAccountId != Guid.Empty)
+                .Where(request => !ConversationMembershipPolicy.IsActiveMember(ConversationMembershipPolicy.FindMember(conversation, request.TargetAccountId)))
+                .GroupBy(request => request.TargetAccountId)
+                .Select(group => group.OrderBy(request => request.RequestedAtUtc).First())
+                .ToList();
+        }
+
+        state.SchemaVersion = 12;
         return true;
     }
 

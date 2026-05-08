@@ -3,6 +3,8 @@ using Dalamud.Game.ClientState.Objects;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.System.String;
+using FFXIVClientStructs.FFXIV.Client.UI;
 using TomestonePhone.Networking;
 using TomestonePhone.UI;
 
@@ -58,7 +60,7 @@ public sealed class Plugin : IDalamudPlugin
         this.service.PluginInterface.UiBuilder.DisableGposeUiHide = true;
 
         this.service.PluginInterface.UiBuilder.Draw += this.DrawUi;
-        this.service.PluginInterface.UiBuilder.OpenMainUi += this.ToggleUi;
+        this.service.PluginInterface.UiBuilder.OpenMainUi += this.ToggleUiWithoutCommandEmote;
         this.service.PluginInterface.UiBuilder.OpenConfigUi += this.OpenSettings;
 
         this.service.Commands.AddHandler(CommandName, new CommandInfo(this.OnCommand)
@@ -78,7 +80,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         this.service.Commands.RemoveHandler(CommandName);
         this.service.PluginInterface.UiBuilder.Draw -= this.DrawUi;
-        this.service.PluginInterface.UiBuilder.OpenMainUi -= this.ToggleUi;
+        this.service.PluginInterface.UiBuilder.OpenMainUi -= this.ToggleUiWithoutCommandEmote;
         this.service.PluginInterface.UiBuilder.OpenConfigUi -= this.OpenSettings;
         this.windows.RemoveAllWindows();
         this.client.Dispose();
@@ -99,6 +101,11 @@ public sealed class Plugin : IDalamudPlugin
     private void ToggleUi()
     {
         this.SetPhoneOpenState(!this.phoneWindow.IsOpen, true);
+    }
+
+    private void ToggleUiWithoutCommandEmote()
+    {
+        this.SetPhoneOpenState(!this.phoneWindow.IsOpen, false);
     }
 
     private void OpenSettings()
@@ -122,12 +129,31 @@ public sealed class Plugin : IDalamudPlugin
     {
         try
         {
-            this.service.Commands.ProcessCommand("/tomestonephone");
+            if (this.service.Framework.IsInFrameworkUpdateThread)
+            {
+                this.ExecuteOpenEmoteCommand();
+                return;
+            }
+
+            _ = this.service.Framework.Run(this.ExecuteOpenEmoteCommand);
         }
         catch (Exception ex)
         {
-            this.service.Log.Warning(ex, "Failed to play /tomestonephone when opening the phone.");
+            this.service.Log.Warning(ex, "Failed to play /tomestone when opening the phone.");
         }
+    }
+
+    private unsafe void ExecuteOpenEmoteCommand()
+    {
+        var uiModule = UIModule.Instance();
+        if (uiModule == null)
+        {
+            this.service.Log.Warning("Failed to play /tomestone when opening the phone because UIModule.Instance() was null.");
+            return;
+        }
+
+        using var command = new Utf8String("/tomestone");
+        uiModule->ProcessChatBoxEntry(&command, saveToHistory: false);
     }
 
     private void DrawUi()

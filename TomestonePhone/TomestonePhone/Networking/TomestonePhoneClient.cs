@@ -194,6 +194,16 @@ public sealed class TomestonePhoneClient : IDisposable
         return await response.Content.ReadFromJsonAsync<ContactRecord>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Add contact returned no payload.");
     }
 
+    public async Task<bool> RemoveContactAsync(string token, Guid contactAccountId, CancellationToken cancellationToken = default)
+    {
+        this.ApplyBaseAddress();
+        this.SetAuth(token);
+        var response = await this.httpClient.DeleteAsync($"/api/contacts/{contactAccountId}", cancellationToken);
+        await this.EnsureSuccessAsync(response, "Remove contact", cancellationToken);
+        var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
+        return payload?.Success ?? false;
+    }
+
     public async Task<ChatMessageRecord> SendMessageAsync(string token, SendMessageRequest request, CancellationToken cancellationToken = default)
     {
         this.ApplyBaseAddress();
@@ -249,7 +259,7 @@ public sealed class TomestonePhoneClient : IDisposable
             await this.EnsureSuccessAsync(response, "Conversation moderation", cancellationToken);
         }
 
-        return await response.Content.ReadFromJsonAsync<ConversationDetail>(cancellationToken: cancellationToken);
+        return await response.Content.ReadFromJsonAsync<ConversationDetail?>(cancellationToken: cancellationToken);
     }
 
     public async Task<ReportReplyResult?> ReplyToReportAsync(string token, ReportReplyRequest request, CancellationToken cancellationToken = default)

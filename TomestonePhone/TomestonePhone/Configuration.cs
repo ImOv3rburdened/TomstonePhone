@@ -40,6 +40,8 @@ public sealed class Configuration : IPluginConfiguration
 
     public float VoiceOutputVolume { get; set; } = 1f;
 
+    public bool EnableSpellCheck { get; set; } = true;
+
     public string? RememberedUsername { get; set; }
 
     public string? RememberedPasswordProtected { get; set; }

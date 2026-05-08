@@ -10,6 +10,8 @@ public interface IPhoneDirectoryService
 
     Task<ContactRecord> UpsertContactAsync(Guid ownerAccountId, ContactNoteUpdateRequest request, CancellationToken cancellationToken = default);
 
+    Task<bool> RemoveContactAsync(Guid ownerAccountId, Guid contactAccountId, CancellationToken cancellationToken = default);
+
     Task<bool> BlockAccountAsync(Guid ownerAccountId, BlockAccountRequest request, CancellationToken cancellationToken = default);
 
     Task<bool> UnblockAccountAsync(Guid ownerAccountId, UnblockAccountRequest request, CancellationToken cancellationToken = default);

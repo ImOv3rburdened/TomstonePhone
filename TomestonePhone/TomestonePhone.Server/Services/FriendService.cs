@@ -37,6 +37,8 @@ public sealed class FriendService : IFriendService
                 throw new InvalidOperationException("A pending friend request already exists.");
             }
 
+            RemoveRequestsBetween(state, senderAccountId, target.Id);
+
             var record = new PersistedFriendRequest
             {
                 Id = Guid.NewGuid(),
@@ -57,6 +59,7 @@ public sealed class FriendService : IFriendService
         return this.repository.ReadAsync<IReadOnlyList<FriendRequestRecord>>(state =>
         {
             return state.FriendRequests
+                .Where(item => string.Equals(item.Status, FriendRequestStatus.Pending.ToString(), StringComparison.OrdinalIgnoreCase))
                 .Where(item => item.RecipientAccountId == accountId || item.SenderAccountId == accountId)
                 .Select(item =>
                 {
@@ -80,14 +83,22 @@ public sealed class FriendService : IFriendService
     {
         return this.repository.WriteAsync<FriendRequestRecord?>(state =>
         {
-            var record = state.FriendRequests.SingleOrDefault(item => item.Id == request.RequestId && item.RecipientAccountId == accountId);
+            var record = state.FriendRequests.SingleOrDefault(item =>
+                item.Id == request.RequestId
+                && item.RecipientAccountId == accountId
+                && string.Equals(item.Status, FriendRequestStatus.Pending.ToString(), StringComparison.OrdinalIgnoreCase));
             if (record is null)
             {
                 return null;
             }
 
-            record.Status = request.Accept ? FriendRequestStatus.Accepted.ToString() : FriendRequestStatus.Declined.ToString();
             var sender = state.Accounts.SingleOrDefault(item => item.Id == record.SenderAccountId);
+            var response = new FriendRequestRecord(
+                record.Id,
+                sender is null ? "Unknown" : AccountLabelFormatter.GetDisplayName(sender),
+                sender?.PhoneNumber ?? "0000000000",
+                request.Accept ? FriendRequestStatus.Accepted : FriendRequestStatus.Declined,
+                true);
 
             if (request.Accept && sender is not null)
             {
@@ -103,25 +114,12 @@ public sealed class FriendService : IFriendService
                     });
                 }
 
-                recipient.ContactPreferences[sender.Id] = new PersistedContactPreference
-                {
-                    DisplayName = AccountLabelFormatter.GetDisplayName(sender),
-                    Note = string.Empty,
-                };
-
-                sender.ContactPreferences[recipient.Id] = new PersistedContactPreference
-                {
-                    DisplayName = AccountLabelFormatter.GetDisplayName(recipient),
-                    Note = string.Empty,
-                };
+                UpsertFriendContact(recipient, sender);
+                UpsertFriendContact(sender, recipient);
             }
 
-            return new FriendRequestRecord(
-                record.Id,
-                sender is null ? "Unknown" : AccountLabelFormatter.GetDisplayName(sender),
-                sender?.PhoneNumber ?? "0000000000",
-                request.Accept ? FriendRequestStatus.Accepted : FriendRequestStatus.Declined,
-                true);
+            RemoveRequestsBetween(state, record.SenderAccountId, record.RecipientAccountId);
+            return response;
         }, cancellationToken);
     }
 
@@ -143,8 +141,26 @@ public sealed class FriendService : IFriendService
                 other.ContactPreferences.Remove(accountId);
             }
 
+            RemoveRequestsBetween(state, accountId, request.FriendAccountId);
+
             return true;
         }, cancellationToken);
+    }
+
+    private static void UpsertFriendContact(PersistedAccount owner, PersistedAccount friend)
+    {
+        owner.ContactPreferences[friend.Id] = new PersistedContactPreference
+        {
+            DisplayName = AccountLabelFormatter.GetDisplayName(friend),
+            Note = string.Empty,
+        };
+    }
+
+    private static void RemoveRequestsBetween(PersistedAppState state, Guid a, Guid b)
+    {
+        state.FriendRequests.RemoveAll(item =>
+            (item.SenderAccountId == a && item.RecipientAccountId == b)
+            || (item.SenderAccountId == b && item.RecipientAccountId == a));
     }
 
     private static bool MatchesFriendship(PersistedFriendship friendship, Guid a, Guid b)

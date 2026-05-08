@@ -61,6 +61,15 @@ public sealed class PhoneDirectoryService : IPhoneDirectoryService
         }, cancellationToken);
     }
 
+    public Task<bool> RemoveContactAsync(Guid ownerAccountId, Guid contactAccountId, CancellationToken cancellationToken = default)
+    {
+        return this.repository.WriteAsync(state =>
+        {
+            var owner = state.Accounts.Single(item => item.Id == ownerAccountId);
+            return owner.ContactPreferences.Remove(contactAccountId);
+        }, cancellationToken);
+    }
+
     public Task<bool> BlockAccountAsync(Guid ownerAccountId, BlockAccountRequest request, CancellationToken cancellationToken = default)
     {
         return this.repository.WriteAsync(state =>

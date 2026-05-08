@@ -56,7 +56,7 @@ public sealed class ChatService : IChatService
         {
             SystemConversationCoordinator.EnsureStaffConversation(state);
             return state.Conversations
-                .Where(item => !item.IsDeleted && item.Members.Any(member => member.AccountId == accountId))
+                .Where(item => !item.IsDeleted && ConversationMembershipPolicy.CanViewConversation(item, accountId))
                 .Select(item => MapSummary(state, accountId, item))
                 .OrderByDescending(item => item.LastActivityUtc)
                 .ToList();
@@ -96,42 +96,161 @@ public sealed class ChatService : IChatService
             SystemConversationCoordinator.EnsureStaffConversation(state);
             var conversation = GetVisibleConversation(state, actorAccountId, request.ConversationId);
             var actor = state.Accounts.Single(item => item.Id == actorAccountId);
-            var actorMember = conversation.Members.Single(member => member.AccountId == actorAccountId);
+            var actorMember = ConversationMembershipPolicy.FindMember(conversation, actorAccountId)
+                ?? throw new InvalidOperationException("Conversation unavailable.");
             var actorRole = ParseRole(actorMember.Role);
             var isStaffActor = SystemConversationCoordinator.IsStaffRole(actor.Role);
+            var now = DateTimeOffset.UtcNow;
 
             if (conversation.LinkedSupportTicketId is not null && !isStaffActor)
             {
-                return null;
+                throw new InvalidOperationException("This conversation cannot be managed from here.");
             }
 
             if (conversation.Kind == SystemConversationCoordinator.StaffConversationKind && actor.Role != nameof(AccountRole.Owner))
             {
-                return MapDetail(state, conversation, actorAccountId);
+                throw new InvalidOperationException("Only the server owner can manage the staff room.");
             }
 
-            if (conversation.LinkedSupportTicketId is null && actorRole is GroupMemberRole.Member && request.Action != ChatModerationAction.AddMember)
+            if (conversation.LinkedSupportTicketId is null
+                && conversation.Kind == SystemConversationCoordinator.StandardConversationKind
+                && request.Action != ChatModerationAction.HideConversation
+                && request.Action != ChatModerationAction.LeaveConversation
+                && !ConversationMembershipPolicy.IsActiveMember(actorMember))
             {
-                return null;
+                throw new InvalidOperationException("You are no longer an active member of this conversation.");
             }
 
             switch (request.Action)
             {
-                case ChatModerationAction.AddMember when request.TargetAccountId is { } addId:
-                    if (conversation.Members.All(member => member.AccountId != addId))
+                case ChatModerationAction.AddMember when conversation.LinkedSupportTicketId is null && actorRole == GroupMemberRole.Owner && request.TargetAccountId is { } addId:
+                    if (conversation.IsReadOnly)
                     {
-                        this.EnsureCanCreateOrGrowStandardGroup(state, GetConversationOwnerAccountId(conversation), conversation.Members.Count + 1, conversation);
+                        throw new InvalidOperationException("This conversation is closed.");
+                    }
+
+                    if (conversation.Kind != SystemConversationCoordinator.StandardConversationKind)
+                    {
+                        throw new InvalidOperationException("Members cannot be added to this conversation.");
+                    }
+
+                    var existingMember = ConversationMembershipPolicy.FindMember(conversation, addId);
+                    var activeMemberCount = ConversationMembershipPolicy.GetActiveMembers(conversation).Count();
+                    if (existingMember is null)
+                    {
+                        this.EnsureCanCreateOrGrowStandardGroup(state, GetConversationOwnerAccountId(conversation), activeMemberCount + 1, conversation);
                         conversation.Members.Add(new PersistedConversationMember
                         {
                             AccountId = addId,
                             Role = nameof(GroupMemberRole.Member),
-                            JoinedAtUtc = DateTimeOffset.UtcNow,
+                            JoinedAtUtc = now,
                         });
+                    }
+                    else if (!ConversationMembershipPolicy.IsActiveMember(existingMember) || existingMember.HiddenAtUtc is not null)
+                    {
+                        this.EnsureCanCreateOrGrowStandardGroup(state, GetConversationOwnerAccountId(conversation), activeMemberCount + 1, conversation);
+                        existingMember.Role = nameof(GroupMemberRole.Member);
+                        existingMember.RemovedAtUtc = null;
+                        existingMember.HiddenAtUtc = null;
+                    }
+
+                    conversation.PendingMemberRequests.RemoveAll(item => item.TargetAccountId == addId);
+                    break;
+                case ChatModerationAction.RequestAddMember when conversation.LinkedSupportTicketId is null && request.TargetAccountId is { } requestAddId:
+                    if (conversation.IsReadOnly)
+                    {
+                        throw new InvalidOperationException("This conversation is closed.");
+                    }
+
+                    if (conversation.Kind != SystemConversationCoordinator.StandardConversationKind || !conversation.IsGroup)
+                    {
+                        throw new InvalidOperationException("Members cannot be requested for this conversation.");
+                    }
+
+                    if (actorRole == GroupMemberRole.Owner)
+                    {
+                        throw new InvalidOperationException("Owners can add members directly.");
+                    }
+
+                    if (requestAddId == actorAccountId)
+                    {
+                        throw new InvalidOperationException("You are already in this group.");
+                    }
+
+                    _ = state.Accounts.SingleOrDefault(item => item.Id == requestAddId)
+                        ?? throw new InvalidOperationException("That contact could not be found.");
+
+                    var requestedMember = ConversationMembershipPolicy.FindMember(conversation, requestAddId);
+                    if (ConversationMembershipPolicy.IsActiveMember(requestedMember))
+                    {
+                        throw new InvalidOperationException("That contact is already in this group.");
+                    }
+
+                    if (conversation.PendingMemberRequests.Any(item => item.TargetAccountId == requestAddId))
+                    {
+                        throw new InvalidOperationException("That contact is already pending owner approval.");
+                    }
+
+                    conversation.PendingMemberRequests.Add(new PersistedConversationPendingMemberRequest
+                    {
+                        TargetAccountId = requestAddId,
+                        RequestedByAccountId = actorAccountId,
+                        RequestedAtUtc = now,
+                    });
+                    break;
+                case ChatModerationAction.ApprovePendingMemberRequest when conversation.LinkedSupportTicketId is null && actorRole == GroupMemberRole.Owner && request.TargetAccountId is { } approveId:
+                    if (conversation.IsReadOnly)
+                    {
+                        throw new InvalidOperationException("This conversation is closed.");
+                    }
+
+                    var pendingApproval = conversation.PendingMemberRequests.SingleOrDefault(item => item.TargetAccountId == approveId)
+                        ?? throw new InvalidOperationException("That request is no longer pending.");
+                    var existingApprovedMember = ConversationMembershipPolicy.FindMember(conversation, approveId);
+                    var approvedActiveMemberCount = ConversationMembershipPolicy.GetActiveMembers(conversation).Count();
+                    if (existingApprovedMember is null)
+                    {
+                        this.EnsureCanCreateOrGrowStandardGroup(state, GetConversationOwnerAccountId(conversation), approvedActiveMemberCount + 1, conversation);
+                        conversation.Members.Add(new PersistedConversationMember
+                        {
+                            AccountId = approveId,
+                            Role = nameof(GroupMemberRole.Member),
+                            JoinedAtUtc = now,
+                        });
+                    }
+                    else if (!ConversationMembershipPolicy.IsActiveMember(existingApprovedMember) || existingApprovedMember.HiddenAtUtc is not null)
+                    {
+                        this.EnsureCanCreateOrGrowStandardGroup(state, GetConversationOwnerAccountId(conversation), approvedActiveMemberCount + 1, conversation);
+                        existingApprovedMember.Role = nameof(GroupMemberRole.Member);
+                        existingApprovedMember.RemovedAtUtc = null;
+                        existingApprovedMember.HiddenAtUtc = null;
+                    }
+
+                    conversation.PendingMemberRequests.RemoveAll(item => item.TargetAccountId == pendingApproval.TargetAccountId);
+                    break;
+                case ChatModerationAction.DeclinePendingMemberRequest when conversation.LinkedSupportTicketId is null && actorRole == GroupMemberRole.Owner && request.TargetAccountId is { } declineId:
+                    if (conversation.PendingMemberRequests.RemoveAll(item => item.TargetAccountId == declineId) == 0)
+                    {
+                        throw new InvalidOperationException("That request is no longer pending.");
                     }
                     break;
                 case ChatModerationAction.RemoveMember when conversation.LinkedSupportTicketId is null && actorRole == GroupMemberRole.Owner && request.TargetAccountId is { } removeId:
-                    conversation.Members.RemoveAll(member => member.AccountId == removeId);
-                    ReassignOwnerIfNeeded(conversation);
+                    if (conversation.IsReadOnly)
+                    {
+                        throw new InvalidOperationException("This conversation is closed.");
+                    }
+
+                    if (removeId == actorAccountId)
+                    {
+                        throw new InvalidOperationException("Use the delete action if you want to close this group for everyone.");
+                    }
+
+                    var removeMember = ConversationMembershipPolicy.FindMember(conversation, removeId);
+                    if (ConversationMembershipPolicy.IsActiveMember(removeMember))
+                    {
+                        removeMember!.RemovedAtUtc = now;
+                        removeMember.HiddenAtUtc = null;
+                    }
                     break;
                 case ChatModerationAction.PromoteModerator when conversation.LinkedSupportTicketId is null && actorRole == GroupMemberRole.Owner && request.TargetAccountId is { } promoteId:
                     SetMemberRole(conversation, promoteId, GroupMemberRole.Moderator);
@@ -143,12 +262,39 @@ public sealed class ChatService : IChatService
                     SetMemberRole(conversation, actorAccountId, GroupMemberRole.Moderator);
                     SetMemberRole(conversation, transferId, GroupMemberRole.Owner);
                     break;
-                case ChatModerationAction.DeleteConversation when conversation.LinkedSupportTicketId is null && actorRole == GroupMemberRole.Owner:
-                    conversation.IsDeleted = true;
+                case ChatModerationAction.CloseConversation when conversation.LinkedSupportTicketId is null && actorRole == GroupMemberRole.Owner:
+                    conversation.IsReadOnly = true;
+                    conversation.ClosedAtUtc ??= now;
                     break;
+                case ChatModerationAction.DeleteConversation when conversation.LinkedSupportTicketId is null && actorRole == GroupMemberRole.Owner:
+                    conversation.IsReadOnly = true;
+                    conversation.ClosedAtUtc ??= now;
+                    conversation.DeletedAtUtc ??= now;
+                    foreach (var member in conversation.Members)
+                    {
+                        member.RemovedAtUtc ??= now;
+                        member.HiddenAtUtc ??= now;
+                    }
+                    break;
+                case ChatModerationAction.LeaveConversation when conversation.LinkedSupportTicketId is null && conversation.IsGroup:
+                    if (actorRole == GroupMemberRole.Owner)
+                    {
+                        throw new InvalidOperationException("Deleting the group is the owner exit path for group chats.");
+                    }
+
+                    actorMember.RemovedAtUtc ??= now;
+                    actorMember.HiddenAtUtc ??= now;
+                    break;
+                case ChatModerationAction.HideConversation when !conversation.IsGroup:
+                    actorMember.HiddenAtUtc ??= now;
+                    break;
+                default:
+                    throw new InvalidOperationException("That action is not available for this conversation.");
             }
 
-            return conversation.IsDeleted ? null : MapDetail(state, conversation, actorAccountId);
+            return ConversationMembershipPolicy.CanViewConversation(conversation, actorAccountId)
+                ? MapDetail(state, conversation, actorAccountId)
+                : null;
         }, cancellationToken);
     }
 
@@ -158,8 +304,14 @@ public sealed class ChatService : IChatService
         {
             SystemConversationCoordinator.EnsureStaffConversation(state);
             var conversation = GetVisibleConversation(state, senderAccountId, request.ConversationId);
-            if (conversation.IsReadOnly)
+            if (!ConversationMembershipPolicy.CanInteractWithConversation(conversation, senderAccountId))
             {
+                var senderMember = ConversationMembershipPolicy.FindMember(conversation, senderAccountId);
+                if (senderMember?.RemovedAtUtc is not null)
+                {
+                    throw new InvalidOperationException("You were removed from this conversation.");
+                }
+
                 throw new InvalidOperationException("This conversation is closed.");
             }
 
@@ -206,6 +358,11 @@ public sealed class ChatService : IChatService
             };
 
             conversation.Messages.Add(message);
+            if (!conversation.IsGroup)
+            {
+                RevealDirectConversation(conversation);
+            }
+
             state.AuditLogs.Add(new PersistedAuditLog
             {
                 Id = Guid.NewGuid(),
@@ -240,6 +397,7 @@ public sealed class ChatService : IChatService
 
             if (existing is not null)
             {
+                RevealDirectConversation(existing);
                 return MapSummary(state, senderAccountId, existing);
             }
 
@@ -267,8 +425,8 @@ public sealed class ChatService : IChatService
         return this.repository.ReadAsync(state =>
         {
             SystemConversationCoordinator.EnsureStaffConversation(state);
-            var conversation = state.Conversations.SingleOrDefault(item => item.Id == conversationId && !item.IsDeleted && item.Members.Any(member => member.AccountId == accountId));
-            if (conversation is null || conversation.IsReadOnly)
+            var conversation = state.Conversations.SingleOrDefault(item => item.Id == conversationId && !item.IsDeleted && ConversationMembershipPolicy.CanViewConversation(item, accountId));
+            if (conversation is null || !ConversationMembershipPolicy.CanInteractWithConversation(conversation, accountId))
             {
                 return false;
             }
@@ -278,11 +436,14 @@ public sealed class ChatService : IChatService
     }
     private static PersistedConversation GetVisibleConversation(PersistedAppState state, Guid accountId, Guid conversationId)
     {
-        return state.Conversations.Single(item => item.Id == conversationId && !item.IsDeleted && item.Members.Any(member => member.AccountId == accountId));
+        return state.Conversations.SingleOrDefault(item => item.Id == conversationId && !item.IsDeleted && ConversationMembershipPolicy.CanViewConversation(item, accountId))
+            ?? throw new InvalidOperationException("Conversation unavailable.");
     }
 
     private static ConversationDetail MapDetail(PersistedAppState state, PersistedConversation conversation, Guid viewerAccountId)
     {
+        var viewerMember = ConversationMembershipPolicy.FindMember(conversation, viewerAccountId)
+            ?? throw new InvalidOperationException("Conversation unavailable.");
         var displayName = conversation.Name;
         if (!conversation.IsGroup)
         {
@@ -301,13 +462,33 @@ public sealed class ChatService : IChatService
             displayName,
             conversation.IsGroup,
             conversation.IsReadOnly,
+            ConversationMembershipPolicy.CanInteractWithConversation(conversation, viewerAccountId),
+            ConversationMembershipPolicy.IsActiveMember(viewerMember) && ParseRole(viewerMember.Role) == GroupMemberRole.Owner,
+            ConversationMembershipPolicy.IsActiveMember(viewerMember),
             conversation.LinkedSupportTicketId,
-            conversation.Members
+            ConversationMembershipPolicy.GetActiveMembers(conversation)
                 .OrderBy(member => member.JoinedAtUtc)
                 .Select(member =>
                 {
                     var account = state.Accounts.Single(item => item.Id == member.AccountId);
                     return new ConversationMemberRecord(member.AccountId, AccountLabelFormatter.GetDisplayName(account), account.PhoneNumber, ParseRole(member.Role), member.JoinedAtUtc);
+                })
+                .ToList(),
+            conversation.PendingMemberRequests
+                .Where(request => request.TargetAccountId != Guid.Empty && request.RequestedByAccountId != Guid.Empty)
+                .Where(request => !ConversationMembershipPolicy.IsActiveMember(ConversationMembershipPolicy.FindMember(conversation, request.TargetAccountId)))
+                .OrderBy(request => request.RequestedAtUtc)
+                .Select(request =>
+                {
+                    var target = state.Accounts.SingleOrDefault(item => item.Id == request.TargetAccountId);
+                    var requester = state.Accounts.SingleOrDefault(item => item.Id == request.RequestedByAccountId);
+                    return new ConversationPendingMemberRequestRecord(
+                        request.TargetAccountId,
+                        target is null ? "Unknown contact" : AccountLabelFormatter.GetDisplayName(target),
+                        target?.PhoneNumber ?? string.Empty,
+                        request.RequestedByAccountId,
+                        requester is null ? "Unknown member" : AccountLabelFormatter.GetDisplayName(requester),
+                        request.RequestedAtUtc);
                 })
                 .ToList(),
             conversation.Messages
@@ -339,6 +520,17 @@ public sealed class ChatService : IChatService
 
     private static bool IsMessageVisibleToViewer(PersistedAppState state, PersistedConversation conversation, PersistedMessage item, Guid viewerAccountId)
     {
+        var viewerMember = ConversationMembershipPolicy.FindMember(conversation, viewerAccountId);
+        if (viewerMember is null)
+        {
+            return false;
+        }
+
+        if (!ConversationMembershipPolicy.IsMessageVisibleToViewer(viewerMember, item))
+        {
+            return false;
+        }
+
         if (conversation.IsGroup)
         {
             return true;
@@ -392,7 +584,12 @@ public sealed class ChatService : IChatService
 
     private static ConversationSummary MapSummary(PersistedAppState state, Guid accountId, PersistedConversation conversation)
     {
-        var last = conversation.Messages.OrderByDescending(item => item.SentAtUtc).FirstOrDefault();
+        var viewerMember = ConversationMembershipPolicy.FindMember(conversation, accountId)
+            ?? throw new InvalidOperationException("Conversation unavailable.");
+        var last = conversation.Messages
+            .Where(item => IsMessageVisibleToViewer(state, conversation, item, accountId))
+            .OrderByDescending(item => item.SentAtUtc)
+            .FirstOrDefault();
         var displayName = conversation.Name;
 
         if (!conversation.IsGroup)
@@ -408,12 +605,15 @@ public sealed class ChatService : IChatService
             conversation.IsGroup,
             GetMessagePreview(last) ?? "No messages yet.",
             last?.SentAtUtc ?? DateTimeOffset.MinValue,
-            0);
+            0,
+            ConversationMembershipPolicy.CanInteractWithConversation(conversation, accountId),
+            ConversationMembershipPolicy.IsActiveMember(viewerMember) && ParseRole(viewerMember.Role) == GroupMemberRole.Owner,
+            ConversationMembershipPolicy.IsActiveMember(viewerMember));
     }
 
     private static GroupMemberRole ParseRole(string value)
     {
-        return Enum.TryParse<GroupMemberRole>(value, out var role) ? role : GroupMemberRole.Member;
+        return ConversationMembershipPolicy.ParseRole(value);
     }
 
     private void EnsureCanCreateOrGrowStandardGroup(PersistedAppState state, Guid ownerAccountId, int targetMemberCount, PersistedConversation? conversation = null)
@@ -439,7 +639,7 @@ public sealed class ChatService : IChatService
 
     private static Guid GetConversationOwnerAccountId(PersistedConversation conversation)
     {
-        var owner = conversation.Members.FirstOrDefault(member => ParseRole(member.Role) == GroupMemberRole.Owner);
+        var owner = ConversationMembershipPolicy.GetActiveMembers(conversation).FirstOrDefault(member => ParseRole(member.Role) == GroupMemberRole.Owner);
         return owner?.AccountId ?? conversation.Members.First().AccountId;
     }
 
@@ -454,17 +654,26 @@ public sealed class ChatService : IChatService
 
     private static void ReassignOwnerIfNeeded(PersistedConversation conversation)
     {
-        if (conversation.Members.Count == 0 || conversation.Members.Any(member => ParseRole(member.Role) == GroupMemberRole.Owner))
+        var activeMembers = ConversationMembershipPolicy.GetActiveMembers(conversation).ToList();
+        if (activeMembers.Count == 0 || activeMembers.Any(member => ParseRole(member.Role) == GroupMemberRole.Owner))
         {
             return;
         }
 
-        var next = conversation.Members
+        var next = activeMembers
             .OrderByDescending(member => ParseRole(member.Role) == GroupMemberRole.Moderator)
             .ThenBy(member => member.JoinedAtUtc)
             .First();
 
         next.Role = nameof(GroupMemberRole.Owner);
+    }
+
+    private static void RevealDirectConversation(PersistedConversation conversation)
+    {
+        foreach (var member in conversation.Members)
+        {
+            member.HiddenAtUtc = null;
+        }
     }
 }
 

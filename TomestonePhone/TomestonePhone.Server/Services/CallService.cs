@@ -133,13 +133,13 @@ public sealed class CallService : ICallService
     private (PersistedActiveCallSession Session, PersistedCall Call, PersistedConversation Conversation) EnsureActiveSession(PersistedAppState state, Guid accountId, StartCallRequest request)
     {
         var conversation = state.Conversations.Single(item => item.Id == request.ConversationId && !item.IsDeleted);
-        if (conversation.Members.All(item => item.AccountId != accountId))
+        if (!ConversationMembershipPolicy.CanInteractWithConversation(conversation, accountId))
         {
-            throw new InvalidOperationException("Not authorized for this conversation.");
+            throw new InvalidOperationException("This conversation is not available for calls.");
         }
 
         var caller = state.Accounts.Single(item => item.Id == accountId);
-        var otherAccounts = conversation.Members
+        var otherAccounts = ConversationMembershipPolicy.GetActiveMembers(conversation)
             .Select(item => state.Accounts.SingleOrDefault(account => account.Id == item.AccountId))
             .OfType<PersistedAccount>()
             .Where(account => account.Id != accountId)
@@ -314,7 +314,7 @@ public sealed class CallService : ICallService
 
     private bool CanAccessConversation(PersistedAppState state, Guid accountId, Guid conversationId)
     {
-        return state.Conversations.Any(item => item.Id == conversationId && !item.IsDeleted && item.Members.Any(member => member.AccountId == accountId));
+        return state.Conversations.Any(item => item.Id == conversationId && !item.IsDeleted && ConversationMembershipPolicy.CanViewConversation(item, accountId));
     }
 
     private CallSummary MapSummary(PersistedAppState state, PersistedCall call, Guid accountId)
@@ -327,6 +327,7 @@ public sealed class CallService : ICallService
         var acknowledged = !missedForViewer || call.MissedAcknowledged;
         return new CallSummary(
             call.Id,
+            call.ConversationId,
             conversation is null ? call.DisplayName : this.GetConversationDisplayName(state, conversation, accountId),
             call.IsGroup ? CallKind.Group : CallKind.Direct,
             direction,
@@ -344,7 +345,7 @@ public sealed class CallService : ICallService
         var startedBy = state.Accounts.SingleOrDefault(item => item.Id == session.StartedByAccountId);
         var participantIds = session.ParticipantAccountIds is { Count: > 0 }
             ? session.ParticipantAccountIds
-            : conversation.Members.Select(item => item.AccountId).ToList();
+            : ConversationMembershipPolicy.GetActiveMembers(conversation).Select(item => item.AccountId).ToList();
         var participants = participantIds
             .Select(id =>
             {

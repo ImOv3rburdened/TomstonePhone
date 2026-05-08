@@ -5,6 +5,10 @@ public sealed record ConversationDetail(
     string Name,
     bool IsGroup,
     bool IsReadOnly,
+    bool CanSendMessages,
+    bool IsOwner,
+    bool IsViewerActive,
     Guid? LinkedSupportTicketId,
     IReadOnlyList<ConversationMemberRecord> Members,
+    IReadOnlyList<ConversationPendingMemberRequestRecord> PendingMemberRequests,
     IReadOnlyList<ExternalMediaEmbedRecord> Embeds);

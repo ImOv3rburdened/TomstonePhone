@@ -6,4 +6,7 @@ public sealed record ConversationSummary(
     bool IsGroup,
     string LastMessagePreview,
     DateTimeOffset LastActivityUtc,
-    int UnreadCount);
+    int UnreadCount,
+    bool CanSendMessages,
+    bool IsOwner,
+    bool IsViewerActive);

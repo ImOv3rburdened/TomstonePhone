@@ -14,7 +14,13 @@ public sealed class PersistedConversation
 
     public bool IsReadOnly { get; set; }
 
+    public DateTimeOffset? ClosedAtUtc { get; set; }
+
+    public DateTimeOffset? DeletedAtUtc { get; set; }
+
     public List<PersistedConversationMember> Members { get; set; } = [];
+
+    public List<PersistedConversationPendingMemberRequest> PendingMemberRequests { get; set; } = [];
 
     public List<PersistedMessage> Messages { get; set; } = [];
 

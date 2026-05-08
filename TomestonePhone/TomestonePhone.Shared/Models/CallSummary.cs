@@ -2,6 +2,7 @@ namespace TomestonePhone.Shared.Models;
 
 public sealed record CallSummary(
     Guid Id,
+    Guid ConversationId,
     string DisplayName,
     CallKind Kind,
     CallDirection Direction,
