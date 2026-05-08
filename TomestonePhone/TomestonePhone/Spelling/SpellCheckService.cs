@@ -77,20 +77,29 @@ public sealed class SpellCheckService
     private static EngineState LoadEngine()
     {
         var dictionaryPath = ResolveDictionaryPath();
-        if (string.IsNullOrWhiteSpace(dictionaryPath))
-        {
-            return new EngineState(null, "English dictionary asset is missing.");
-        }
-
         try
         {
             var engine = new SymSpell(82_765, 2);
-            if (!engine.LoadDictionary(dictionaryPath, 0, 1))
+            if (!string.IsNullOrWhiteSpace(dictionaryPath))
             {
-                return new EngineState(null, "English dictionary failed to load.");
+                if (!engine.LoadDictionary(dictionaryPath, 0, 1))
+                {
+                    return new EngineState(null, "English dictionary failed to load.");
+                }
+
+                return new EngineState(engine, null);
             }
 
-            return new EngineState(engine, null);
+            const string embeddedDictionaryName = "TomestonePhone.Spelling.frequency_dictionary_en_82_765.txt";
+            using var embeddedDictionary = typeof(SpellCheckService).Assembly.GetManifestResourceStream(embeddedDictionaryName);
+            if (embeddedDictionary is null)
+            {
+                return new EngineState(null, "English dictionary asset is missing.");
+            }
+
+            return engine.LoadDictionary(embeddedDictionary, 0, 1)
+                ? new EngineState(engine, null)
+                : new EngineState(null, "English dictionary failed to load.");
         }
         catch (Exception ex)
         {

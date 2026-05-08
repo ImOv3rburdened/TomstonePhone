@@ -59,6 +59,9 @@
     <EmbeddedResource Include="assets\splash\splash-screen-eorzea.png">
       <LogicalName>TomestonePhone.EmbeddedIcons.splash-screen-eorzea.png</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="assets\spelling\frequency_dictionary_en_82_765.txt">
+      <LogicalName>TomestonePhone.Spelling.frequency_dictionary_en_82_765.txt</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <ItemGroup>
