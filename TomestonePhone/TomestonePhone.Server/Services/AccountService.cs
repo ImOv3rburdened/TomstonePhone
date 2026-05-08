@@ -235,11 +235,18 @@ public sealed class AccountService : IAccountService
         return this.repository.WriteAsync(state =>
         {
             var account = state.Accounts.Single(item => item.Id == accountId);
+            if (string.IsNullOrWhiteSpace(request.CharacterName)
+                || string.IsNullOrWhiteSpace(request.WorldName))
+            {
+                account.LastKnownGameIdentity = null;
+                return MapProfile(account);
+            }
+
             account.LastKnownGameIdentity = new PersistedGameIdentity
             {
-                CharacterName = request.CharacterName,
-                WorldName = request.WorldName,
-                FullHandle = $"{request.CharacterName}@{request.WorldName}",
+                CharacterName = request.CharacterName.Trim(),
+                WorldName = request.WorldName.Trim(),
+                FullHandle = $"{request.CharacterName.Trim()}@{request.WorldName.Trim()}",
             };
             return MapProfile(account);
         }, cancellationToken);

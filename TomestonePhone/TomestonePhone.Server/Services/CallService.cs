@@ -381,7 +381,7 @@ public sealed class CallService : ICallService
         var udpPort = this.voiceOptions.UdpPort > 0 ? this.voiceOptions.UdpPort : tcpPort;
         var qualityLabel = string.IsNullOrWhiteSpace(this.voiceOptions.QualityLabel) ? "Aether Voice" : this.voiceOptions.QualityLabel;
         var sampleRateHz = this.voiceOptions.SampleRateHz > 0 ? this.voiceOptions.SampleRateHz : 16000;
-        var bitrateKbps = this.voiceOptions.BitrateKbps > 0 ? this.voiceOptions.BitrateKbps : 16;
+        var bitrateKbps = this.voiceOptions.BitrateKbps > 0 ? this.voiceOptions.BitrateKbps : 24;
         var frameSizeMs = this.voiceOptions.FrameSizeMs > 0 ? this.voiceOptions.FrameSizeMs : 20;
         return new VoiceSessionInfo(
             provider,

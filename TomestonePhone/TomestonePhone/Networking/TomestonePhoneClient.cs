@@ -471,7 +471,12 @@ public sealed class TomestonePhoneClient : IDisposable
     }
     private void ApplyBaseAddress()
     {
-        var target = this.configuration.ServerBaseUrl.TrimEnd('/');
+        if (!Configuration.TryValidateBackendUrl(this.configuration.ServerBaseUrl, out var target, out var error))
+        {
+            throw new InvalidOperationException(error);
+        }
+
+        this.configuration.ServerBaseUrl = target;
         if (this.httpClient.BaseAddress?.ToString().TrimEnd('/') != target)
         {
             this.httpClient.BaseAddress = new Uri(target, UriKind.Absolute);
