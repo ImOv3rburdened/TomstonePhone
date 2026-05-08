@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
+using Concentus;
+using Concentus.Enums;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 using TomestonePhone.Shared.Models;
@@ -22,9 +24,12 @@ public sealed class VoiceChatSession : IDisposable
     private MixingSampleProvider? mixer;
     private VolumeSampleProvider? playbackVolumeProvider;
     private WaveFormat? waveFormat;
+    private IOpusEncoder? opusEncoder;
+    private IOpusDecoder? opusDecoder;
     private Guid sessionId;
     private Guid currentAccountId;
     private int frameBytes;
+    private int frameSamples;
     private int frameMilliseconds = 20;
     private bool disposed;
     private bool isMuted;
@@ -71,8 +76,15 @@ public sealed class VoiceChatSession : IDisposable
         try
         {
             this.frameMilliseconds = Math.Clamp(voiceSession.FrameSizeMs <= 0 ? 20 : voiceSession.FrameSizeMs, 10, 60);
-            this.frameBytes = sampleRate * channels * (sampleBits / 8) * this.frameMilliseconds / 1000;
+            this.frameSamples = sampleRate * this.frameMilliseconds / 1000;
+            this.frameBytes = this.frameSamples * channels * (sampleBits / 8);
             this.waveFormat = new WaveFormat(sampleRate, sampleBits, channels);
+            OpusCodecFactory.AttemptToUseNativeLibrary = false;
+            this.opusEncoder = OpusCodecFactory.CreateEncoder(sampleRate, channels, OpusApplication.OPUS_APPLICATION_VOIP);
+            this.opusEncoder.Bitrate = Math.Clamp(voiceSession.BitrateKbps <= 0 ? 24 : voiceSession.BitrateKbps, 12, 64) * 1000;
+            this.opusEncoder.Complexity = 5;
+            this.opusEncoder.SignalType = OpusSignal.OPUS_SIGNAL_VOICE;
+            this.opusDecoder = OpusCodecFactory.CreateDecoder(sampleRate, channels);
             this.sessionId = call.SessionId;
             this.currentAccountId = accountId;
             this.isMuted = call.IsMuted;
@@ -224,8 +236,11 @@ public sealed class VoiceChatSession : IDisposable
         this.mixer = null;
         this.playbackVolumeProvider = null;
         this.waveFormat = null;
+        this.opusEncoder = null;
+        this.opusDecoder = null;
         this.sessionId = Guid.Empty;
         this.currentAccountId = Guid.Empty;
+        this.frameSamples = 0;
         this.frameMilliseconds = 20;
         this.reduceBackgroundNoise = false;
         this.micVolume = 1f;
@@ -246,10 +261,15 @@ public sealed class VoiceChatSession : IDisposable
 
     private static Uri BuildVoiceWebSocketUri(string serverBaseUrl, Guid sessionId)
     {
-        var baseUri = new Uri(serverBaseUrl, UriKind.Absolute);
+        if (!Configuration.TryValidateBackendUrl(serverBaseUrl, out var normalizedServerBaseUrl, out var error))
+        {
+            throw new InvalidOperationException(error);
+        }
+
+        var baseUri = new Uri(normalizedServerBaseUrl, UriKind.Absolute);
         var builder = new UriBuilder(baseUri)
         {
-            Scheme = string.Equals(baseUri.Scheme, "https", StringComparison.OrdinalIgnoreCase) ? "wss" : "ws",
+            Scheme = "wss",
             Path = $"/ws/calls/{sessionId}",
             Query = string.Empty,
         };
@@ -315,10 +335,35 @@ public sealed class VoiceChatSession : IDisposable
                 var processedFrame = this.ProcessCapturedFrame(frame);
                 if (processedFrame is not null)
                 {
-                    _ = this.SendFrameAsync(processedFrame);
+                    var encodedFrame = this.EncodeCapturedFrame(processedFrame);
+                    if (encodedFrame is not null)
+                    {
+                        _ = this.SendFrameAsync(encodedFrame);
+                    }
                 }
             }
         }
+    }
+
+    private byte[]? EncodeCapturedFrame(byte[] pcmFrame)
+    {
+        if (this.opusEncoder is null || this.frameSamples <= 0)
+        {
+            return null;
+        }
+
+        var pcm = new short[this.frameSamples];
+        Buffer.BlockCopy(pcmFrame, 0, pcm, 0, Math.Min(pcmFrame.Length, pcm.Length * sizeof(short)));
+        var encoded = new byte[1275];
+        var encodedLength = this.opusEncoder.Encode(pcm, this.frameSamples, encoded, encoded.Length);
+        if (encodedLength <= 0)
+        {
+            return null;
+        }
+
+        var packet = new byte[encodedLength];
+        Buffer.BlockCopy(encoded, 0, packet, 0, encodedLength);
+        return packet;
     }
 
     private byte[]? ProcessCapturedFrame(byte[] frame)
@@ -471,11 +516,31 @@ public sealed class VoiceChatSession : IDisposable
             var payload = new byte[packet.Length - 16];
             Buffer.BlockCopy(packet, 16, payload, 0, payload.Length);
             var speaker = this.remoteSpeakers.GetOrAdd(senderId, this.CreateRemoteSpeaker);
-            if (payload.Length > 0)
+            var decodedPayload = this.DecodeRemoteFrame(payload);
+            if (decodedPayload.Length > 0)
             {
-                speaker.Buffer.AddSamples(payload, 0, payload.Length);
+                speaker.Buffer.AddSamples(decodedPayload, 0, decodedPayload.Length);
             }
         }
+    }
+
+    private byte[] DecodeRemoteFrame(byte[] encodedPayload)
+    {
+        if (this.opusDecoder is null || this.frameSamples <= 0 || encodedPayload.Length == 0)
+        {
+            return [];
+        }
+
+        var pcm = new short[this.frameSamples];
+        var decodedSamples = this.opusDecoder.Decode(encodedPayload, pcm, this.frameSamples, false);
+        if (decodedSamples <= 0)
+        {
+            return [];
+        }
+
+        var decodedBytes = new byte[decodedSamples * sizeof(short)];
+        Buffer.BlockCopy(pcm, 0, decodedBytes, 0, decodedBytes.Length);
+        return decodedBytes;
     }
 
     private RemoteSpeakerState CreateRemoteSpeaker(Guid _)

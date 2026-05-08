@@ -1,4 +1,5 @@
 using System.IO;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using Dalamud.Configuration;
@@ -7,6 +8,8 @@ namespace TomestonePhone;
 
 public sealed class Configuration : IPluginConfiguration
 {
+    public const string DefaultServerBaseUrl = "https://tomephone.cc";
+
     private const string EmbeddedContactsIcon = "embedded://app-contacts.png";
     private const string EmbeddedMessagesIcon = "embedded://app-messages.png";
     private const string EmbeddedCallsIcon = "embedded://app-phone.png";
@@ -20,7 +23,7 @@ public sealed class Configuration : IPluginConfiguration
 
     public int Version { get; set; } = 1;
 
-    public string ServerBaseUrl { get; set; } = "http://173.208.169.194:5050";
+    public string ServerBaseUrl { get; set; } = DefaultServerBaseUrl;
 
     public string? Username { get; set; }
 
@@ -104,6 +107,8 @@ public sealed class Configuration : IPluginConfiguration
 
     public bool OpenEmoteSetupSeen { get; set; }
 
+    public bool ShareGameIdentity { get; set; }
+
     public bool GiphySetupSeen { get; set; }
 
     public List<GifFavorite> GifFavorites { get; set; } = [];
@@ -126,13 +131,56 @@ public sealed class Configuration : IPluginConfiguration
     {
         if (string.IsNullOrWhiteSpace(this.ServerBaseUrl))
         {
-            this.ServerBaseUrl = "http://173.208.169.194:5050";
+            this.ServerBaseUrl = DefaultServerBaseUrl;
             return;
         }
 
-        this.ServerBaseUrl = this.ServerBaseUrl
+        var normalized = this.ServerBaseUrl.Trim()
             .Replace(":8080", ":5050", StringComparison.OrdinalIgnoreCase)
             .Replace("/8080", "/5050", StringComparison.OrdinalIgnoreCase);
+
+        if (!TryValidateBackendUrl(normalized, out _, out _))
+        {
+            normalized = DefaultServerBaseUrl;
+        }
+
+        this.ServerBaseUrl = normalized.TrimEnd('/');
+    }
+
+    public static bool TryValidateBackendUrl(string value, out string normalized, out string error)
+    {
+        normalized = string.Empty;
+        error = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(value)
+            || !Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri))
+        {
+            error = "Server URL must be an absolute HTTPS URL.";
+            return false;
+        }
+
+        if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            error = "Server URL must use HTTPS.";
+            return false;
+        }
+
+        if (IPAddress.TryParse(uri.Host, out _)
+            || uri.HostNameType != UriHostNameType.Dns)
+        {
+            error = "Server URL must use a DNS hostname, not an IP address.";
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(uri.PathAndQuery)
+            && uri.PathAndQuery != "/")
+        {
+            error = "Server URL must point to the server root, for example https://tomephone.cc.";
+            return false;
+        }
+
+        normalized = uri.GetLeftPart(UriPartial.Authority).TrimEnd('/');
+        return true;
     }
 
     public void NormalizeAssetPaths()

@@ -587,14 +587,14 @@ public sealed class PhoneWindow : Window
 
     private void DrawAuthStartScreen()
     {
-        using var panel = ImRaii.Child("auth-start", new Vector2(-1f, -1f), true);
+        using var panel = ImRaii.Child("auth-start", new Vector2(-1f, -1f), true, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
         if (!panel.Success)
         {
             return;
         }
 
         var width = ImGui.GetContentRegionAvail().X;
-        using (var hero = ImRaii.Child("auth-hero", new Vector2(-1f, this.Scale(148f)), false))
+        using (var hero = ImRaii.Child("auth-hero", new Vector2(-1f, this.Scale(148f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
         {
             if (hero.Success)
             {
@@ -608,7 +608,10 @@ public sealed class PhoneWindow : Window
                 ImGui.TextUnformatted("Welcome");
                 ImGui.TextWrapped("Sign in or create your TomestonePhone account before using messages, calls, contacts, and support.");
                 ImGui.Dummy(new Vector2(0f, this.Scale(4f)));
-                ImGui.TextDisabled("Your account and phone number are restored automatically on this device once you sign in.");
+                using (ImRaii.PushColor(ImGuiCol.Text, ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled]))
+                {
+                    ImGui.TextWrapped("Your account and phone number are restored automatically on this device once you sign in.");
+                }
             }
         }
 
@@ -617,43 +620,36 @@ public sealed class PhoneWindow : Window
             ImGui.TextColored(new Vector4(0.95f, 0.45f, 0.45f, 1f), this.configuration.LocalAccountLockoutReason);
         }
 
-        using (var account = ImRaii.Child("auth-account-card", new Vector2(-1f, this.Scale(160f)), false))
+        ImGui.Dummy(new Vector2(0f, this.Scale(4f)));
+        ImGui.TextDisabled("Account");
+        ImGui.SetNextItemWidth(-1f);
+        ImGui.InputTextWithHint("##auth-username", "Username", ref this.loginUsername, 64);
+        ImGui.SetNextItemWidth(-1f);
+        ImGui.InputTextWithHint("##auth-password", "Password", ref this.loginPassword, 64, ImGuiInputTextFlags.Password);
+
+        var actionWidth = (ImGui.GetContentRegionAvail().X - this.Scale(12f)) * 0.5f;
+        if (this.DrawPhonePillButton("Create Account", new Vector2(actionWidth, this.Scale(34f))))
         {
-            if (account.Success)
-            {
-                ImGui.TextDisabled("Account");
-                ImGui.InputTextWithHint("##auth-username", "Username", ref this.loginUsername, 64);
-                ImGui.InputTextWithHint("##auth-password", "Password", ref this.loginPassword, 64, ImGuiInputTextFlags.Password);
-                var actionWidth = (ImGui.GetContentRegionAvail().X - this.Scale(12f)) * 0.5f;
-                if (ImGui.Button("Create Account", new Vector2(actionWidth, this.Scale(36f))))
-                {
-                    this.BeginRegister();
-                }
-                ImGui.SameLine();
-                if (ImGui.Button("Sign In", new Vector2(actionWidth, this.Scale(36f))))
-                {
-                    this.BeginLogin();
-                }
-            }
+            this.BeginRegister();
+        }
+        ImGui.SameLine();
+        if (this.DrawPhonePillButton("Sign In", new Vector2(actionWidth, this.Scale(34f))))
+        {
+            this.BeginLogin();
         }
 
-        using (var legal = ImRaii.Child("auth-legal-card", new Vector2(-1f, this.Scale(94f)), false))
+        ImGui.Dummy(new Vector2(0f, this.Scale(10f)));
+        ImGui.TextDisabled("Before you continue");
+        ImGui.TextWrapped("Terms and Privacy stay available inside the phone at any time.");
+        var legalButtonWidth = (ImGui.GetContentRegionAvail().X - this.Scale(12f)) * 0.5f;
+        if (this.DrawPhonePillButton("Terms", new Vector2(legalButtonWidth, this.Scale(34f))))
         {
-            if (legal.Success)
-            {
-                ImGui.TextDisabled("Before you continue");
-                ImGui.TextWrapped("Terms and Privacy stay available inside the phone at any time.");
-                var legalButtonWidth = (ImGui.GetContentRegionAvail().X - this.Scale(12f)) * 0.5f;
-                if (ImGui.Button("Terms", new Vector2(legalButtonWidth, this.Scale(34f))))
-                {
-                    this.activeTab = PhoneTab.Legal;
-                }
-                ImGui.SameLine();
-                if (ImGui.Button("Privacy", new Vector2(legalButtonWidth, this.Scale(34f))))
-                {
-                    this.activeTab = PhoneTab.Privacy;
-                }
-            }
+            this.activeTab = PhoneTab.Legal;
+        }
+        ImGui.SameLine();
+        if (this.DrawPhonePillButton("Privacy", new Vector2(legalButtonWidth, this.Scale(34f))))
+        {
+            this.activeTab = PhoneTab.Privacy;
         }
     }
 
@@ -2025,13 +2021,13 @@ public sealed class PhoneWindow : Window
     }
     private void DrawSessionRestoreScreen()
     {
-        using var panel = ImRaii.Child("session-restore", new Vector2(-1f, -1f), false);
+        using var panel = ImRaii.Child("session-restore", new Vector2(-1f, -1f), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
         if (!panel.Success)
         {
             return;
         }
 
-        using var card = ImRaii.Child("session-restore-card", new Vector2(-1f, this.Scale(220f)), false);
+        using var card = ImRaii.Child("session-restore-card", new Vector2(-1f, this.Scale(220f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
         if (!card.Success)
         {
             return;
@@ -2044,13 +2040,13 @@ public sealed class PhoneWindow : Window
         ImGui.Spacing();
         ImGui.TextDisabled(this.pendingStatus);
         ImGui.Spacing();
-        if (ImGui.Button("Retry Now", this.Scale(128f, 34f)))
+        if (this.DrawPhonePillButton("Retry Now", this.Scale(128f, 34f)))
         {
             this.refreshOnNextDraw = true;
             this.RefreshSnapshot();
         }
         ImGui.SameLine();
-        if (ImGui.Button("Log Out", this.Scale(128f, 34f)))
+        if (this.DrawPhonePillButton("Log Out", this.Scale(128f, 34f)))
         {
             this.SignOutToGuestState("Signed out");
         }
