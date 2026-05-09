@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.Extensions.Options;
 using TomestonePhone.Server.Models;
 using TomestonePhone.Shared.Models;
@@ -389,11 +390,16 @@ public sealed class CallService : ICallService
             tcpPort,
             udpPort,
             $"{channelPrefix}-{conversation.Id:N}",
-            Convert.ToHexString(Guid.NewGuid().ToByteArray()).ToLowerInvariant(),
+            GenerateVoiceAccessToken(),
             qualityLabel,
             sampleRateHz,
             bitrateKbps,
             frameSizeMs);
+    }
+
+    private static string GenerateVoiceAccessToken()
+    {
+        return Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
     }
 
     private VoiceSessionInfo? MapVoiceSession(string provider, string host, int tcpPort, int udpPort, string channelName, string accessToken, string qualityLabel, int sampleRateHz, int bitrateKbps, int frameSizeMs)
