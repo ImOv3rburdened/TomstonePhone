@@ -6,6 +6,7 @@ public enum PhoneTab
     Calls,
     Contacts,
     Friends,
+    Wallpapers,
     Settings,
     Legal,
     Privacy,

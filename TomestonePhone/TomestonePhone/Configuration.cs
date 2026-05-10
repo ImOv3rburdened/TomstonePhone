@@ -15,6 +15,7 @@ public sealed class Configuration : IPluginConfiguration
     private const string EmbeddedCallsIcon = "embedded://app-phone.png";
     private const string EmbeddedFriendsIcon = "embedded://app-friends.png";
     private const string EmbeddedSettingsIcon = "embedded://app-settings.png";
+    private const string EmbeddedWallpapersIcon = "embedded://app-wallpapers.png";
     private const string EmbeddedLegalIcon = "embedded://app-legal.png";
     private const string EmbeddedPrivacyIcon = "embedded://app-privacy.png";
     private const string EmbeddedSupportIcon = "embedded://app-support.png";
@@ -51,11 +52,27 @@ public sealed class Configuration : IPluginConfiguration
 
     public string BackgroundImagePath { get; set; } = string.Empty;
 
+    public PhoneWallpaperMode BackgroundMode { get; set; } = PhoneWallpaperMode.Fit;
+
     public float BackgroundZoom { get; set; } = 1f;
 
     public float BackgroundOffsetX { get; set; }
 
     public float BackgroundOffsetY { get; set; }
+
+    public bool UseSolidBackgroundColor { get; set; }
+
+    public string SolidBackgroundColorHex { get; set; } = "#1B2233";
+
+    public float SolidBackgroundAlpha { get; set; } = 1f;
+
+    public bool UseIconTint { get; set; }
+
+    public bool UseGreyscaleBaseIcons { get; set; }
+
+    public string IconTintColorHex { get; set; } = "#D9B56D";
+
+    public float IconTintAlpha { get; set; } = 0.22f;
 
     public string ContactsIconPath { get; set; } = EmbeddedContactsIcon;
 
@@ -66,6 +83,8 @@ public sealed class Configuration : IPluginConfiguration
     public string FriendsIconPath { get; set; } = EmbeddedFriendsIcon;
 
     public string SettingsIconPath { get; set; } = EmbeddedSettingsIcon;
+
+    public string WallpapersIconPath { get; set; } = EmbeddedWallpapersIcon;
 
     public string LegalIconPath { get; set; } = EmbeddedLegalIcon;
 
@@ -125,6 +144,68 @@ public sealed class Configuration : IPluginConfiguration
     public string GetLocalWallpaperPath()
     {
         return Path.Combine(this.GetLocalUserAssetDirectory(), "wallpaper.png");
+    }
+
+    public string GetLocalWallpaperDirectory()
+    {
+        var path = Path.Combine(this.GetLocalUserAssetDirectory(), "wallpapers");
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    public string GetLocalWallpaperImportPath(string sourcePath)
+    {
+        var sourceName = Path.GetFileNameWithoutExtension(sourcePath);
+        var safeName = string.Concat(sourceName.Select(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' ? ch : '-')).Trim('-');
+        if (string.IsNullOrWhiteSpace(safeName))
+        {
+            safeName = "wallpaper";
+        }
+
+        var directory = this.GetLocalWallpaperDirectory();
+        var candidate = Path.Combine(directory, $"{safeName}.png");
+        var index = 1;
+        while (File.Exists(candidate))
+        {
+            candidate = Path.Combine(directory, $"{safeName}-{index}.png");
+            index++;
+        }
+
+        return candidate;
+    }
+
+    public string GetLocalIconDirectory()
+    {
+        var path = Path.Combine(this.GetLocalUserAssetDirectory(), "icons");
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    public string GetLocalIconImportPath(string appId, string sourcePath)
+    {
+        var sourceName = Path.GetFileNameWithoutExtension(sourcePath);
+        var safeAppId = string.Concat(appId.Select(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' ? ch : '-')).Trim('-');
+        var safeName = string.Concat(sourceName.Select(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' ? ch : '-')).Trim('-');
+        if (string.IsNullOrWhiteSpace(safeAppId))
+        {
+            safeAppId = "app";
+        }
+
+        if (string.IsNullOrWhiteSpace(safeName))
+        {
+            safeName = "icon";
+        }
+
+        var directory = this.GetLocalIconDirectory();
+        var candidate = Path.Combine(directory, $"{safeAppId}-{safeName}.png");
+        var index = 1;
+        while (File.Exists(candidate))
+        {
+            candidate = Path.Combine(directory, $"{safeAppId}-{safeName}-{index}.png");
+            index++;
+        }
+
+        return candidate;
     }
 
     public void NormalizeServerBaseUrl()
@@ -190,6 +271,7 @@ public sealed class Configuration : IPluginConfiguration
         this.CallsIconPath = EmbeddedCallsIcon;
         this.FriendsIconPath = EmbeddedFriendsIcon;
         this.SettingsIconPath = EmbeddedSettingsIcon;
+        this.WallpapersIconPath = EmbeddedWallpapersIcon;
         this.LegalIconPath = EmbeddedLegalIcon;
         this.PrivacyIconPath = EmbeddedPrivacyIcon;
         this.SupportIconPath = EmbeddedSupportIcon;
@@ -241,4 +323,11 @@ public sealed class Configuration : IPluginConfiguration
             return null;
         }
     }
+}
+
+public enum PhoneWallpaperMode
+{
+    Fit,
+    Stretch,
+    Custom,
 }

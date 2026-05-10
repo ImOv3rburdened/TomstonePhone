@@ -18,6 +18,21 @@ namespace TomestonePhone.UI;
 
 public sealed class PhoneWindow : Window
 {
+    private sealed record WallpaperChoice(string Name, string Path, bool IsBundled);
+
+    private enum SettingsPane
+    {
+        General,
+        Icons,
+    }
+
+    private enum LocalImagePickerTarget
+    {
+        Wallpaper,
+    }
+
+    private sealed record CustomizableAppIcon(string Id, string Name, PhoneTab Tab, Func<string> GetPath, Action<string> SetPath, string DefaultPath);
+
     private enum MessageFolder
     {
         Regular,
@@ -92,7 +107,16 @@ public sealed class PhoneWindow : Window
     private string friendRequestTarget = string.Empty;
     private string friendRequestMessage = string.Empty;
     private string reportReplyBody = string.Empty;
-    private string wallpaperImportPath = string.Empty;
+    private string iconImportPath = string.Empty;
+    private string localImagePickerDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+    private string localImagePickerSearch = string.Empty;
+    private string localImagePickerFileName = string.Empty;
+    private string? selectedLocalImagePath;
+    private bool openLocalImagePicker;
+    private LocalImagePickerTarget localImagePickerTarget = LocalImagePickerTarget.Wallpaper;
+    private bool showIconSizeWarningModal;
+    private string iconSizeWarningMessage = string.Empty;
+    private SettingsPane activeSettingsPane = SettingsPane.General;
     private bool showLinkWarningModal;
     private string pendingExternalUrl = string.Empty;
     private int renderedMessageCount;
@@ -246,11 +270,11 @@ public sealed class PhoneWindow : Window
 
     private void GetDockMetrics(float availableWidth, out float spacing, out float horizontalInset, out float cellWidth, out float iconSize, out float dockHeight)
     {
-        spacing = this.Scale(14f);
-        horizontalInset = this.Scale(16f);
+        spacing = this.Scale(16f);
+        horizontalInset = this.Scale(18f);
         cellWidth = (availableWidth - horizontalInset * 2f - spacing * 2f) / 3f;
-        iconSize = Math.Min(cellWidth * 0.82f, this.Scale(76f));
-        dockHeight = iconSize + this.Scale(60f);
+        iconSize = Math.Min(cellWidth * 0.82f, this.Scale(92f));
+        dockHeight = iconSize * 1.4f;
     }
 
     private bool IsStaffConversation(ConversationSummary conversation)
@@ -340,7 +364,9 @@ public sealed class PhoneWindow : Window
         this.DrawOpenEmoteSetupModal();
         this.DrawExternalLinkWarningModal();
 
+        var rootBackground = this.PushTransparentScreenChildBackgroundIfNeeded();
         using var root = ImRaii.Child("TomestonePhoneRoot", new Vector2(-1f, -1f), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+        rootBackground?.Dispose();
         if (!root.Success)
         {
             return;
@@ -350,11 +376,13 @@ public sealed class PhoneWindow : Window
         this.DrawHeader();
         ImGui.Separator();
 
-        var footerHeight = this.Scale(52f);
+        var footerHeight = this.Scale(28f);
         var contentSpacing = ImGui.GetStyle().ItemSpacing.Y;
         var contentHeight = Math.Max(this.Scale(120f), ImGui.GetContentRegionAvail().Y - footerHeight - contentSpacing);
+        var contentBackground = this.PushTransparentScreenChildBackgroundIfNeeded();
         using (var content = ImRaii.Child("TomestonePhoneContent", new Vector2(-1f, contentHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
         {
+            contentBackground?.Dispose();
             if (!content.Success)
             {
                 return;
@@ -418,6 +446,9 @@ public sealed class PhoneWindow : Window
                     case PhoneTab.Settings:
                         this.DrawSettings();
                         break;
+                    case PhoneTab.Wallpapers:
+                        this.DrawWallpapersApp();
+                        break;
                     case PhoneTab.Legal:
                         this.DrawLegalApp();
                         break;
@@ -437,8 +468,10 @@ public sealed class PhoneWindow : Window
             }
         }
 
+        var footerBackground = this.PushTransparentScreenChildBackgroundIfNeeded();
         using (var footer = ImRaii.Child("TomestonePhoneFooter", new Vector2(-1f, footerHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
         {
+            footerBackground?.Dispose();
             if (footer.Success)
             {
                 this.DrawHomeButton();
@@ -555,7 +588,7 @@ public sealed class PhoneWindow : Window
         draw.AddRectFilled(topStart, topStart + new Vector2(topWidth, topHeight), ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.045f)), this.Scale(22f));
         draw.AddRect(topStart, topStart + new Vector2(topWidth, topHeight), ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.06f)), this.Scale(22f));
 
-        ImGui.SetCursorScreenPos(topStart + new Vector2(this.Scale(14f), this.Scale(10f)));
+        ImGui.SetCursorScreenPos(topStart + new Vector2(this.Scale(14f), this.Scale(6f)));
         ImGui.TextDisabled(DateTime.Now.ToString("h:mm"));
         var rightLabel = "Aether   |||   88%";
         var rightSize = ImGui.CalcTextSize(rightLabel);
@@ -572,7 +605,7 @@ public sealed class PhoneWindow : Window
         {
             var refreshWidth = this.Scale(78f);
             ImGui.SameLine(topWidth - refreshWidth - this.Scale(14f));
-            if (this.DrawPhonePillButton("Refresh", new Vector2(refreshWidth, this.Scale(24f))))
+            if (this.DrawHeaderRefreshButton(new Vector2(refreshWidth, this.Scale(24f))))
             {
                 this.refreshOnNextDraw = true;
                 this.RefreshSnapshot();
@@ -583,6 +616,26 @@ public sealed class PhoneWindow : Window
         ImGui.TextDisabled(this.pendingStatus);
         ImGui.SetCursorScreenPos(topStart);
         ImGui.Dummy(new Vector2(topWidth, statusOffsetY + statusLineHeight - this.Scale(2f)));
+    }
+
+    private bool DrawHeaderRefreshButton(Vector2 size)
+    {
+        using var rounding = ImRaii.PushStyle(ImGuiStyleVar.FrameRounding, size.Y * 0.5f);
+        using var color = ImRaii.PushColor(ImGuiCol.Button, new Vector4(1f, 1f, 1f, 0.055f));
+        using var hover = ImRaii.PushColor(ImGuiCol.ButtonHovered, new Vector4(1f, 1f, 1f, 0.105f));
+        using var active = ImRaii.PushColor(ImGuiCol.ButtonActive, new Vector4(1f, 1f, 1f, 0.15f));
+        var clicked = ImGui.Button("##header-refresh", size);
+        var min = ImGui.GetItemRectMin();
+        var max = ImGui.GetItemRectMax();
+        var draw = ImGui.GetWindowDrawList();
+        draw.AddRect(min, max, ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.72f)), size.Y * 0.5f, ImDrawFlags.None, this.Scale(1f));
+
+        const string label = "Refresh";
+        var textSize = ImGui.CalcTextSize(label);
+        var textPosition = new Vector2(min.X + (size.X - textSize.X) * 0.5f, min.Y + (size.Y - textSize.Y) * 0.5f);
+        draw.AddText(textPosition + new Vector2(0f, this.Scale(1f)), ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.5f)), label);
+        draw.AddText(textPosition, ImGui.GetColorU32(Vector4.One), label);
+        return clicked;
     }
 
     private void DrawAuthStartScreen()
@@ -661,11 +714,12 @@ public sealed class PhoneWindow : Window
         var spacing = this.Scale(12f);
         var sideInset = this.Scale(6f);
         var topInset = this.Scale(10f);
-        var bottomInset = this.Scale(8f);
+        var bottomInset = this.Scale(2f);
         this.GetDockMetrics(totalWidth, out _, out _, out _, out _, out var dockHeight);
         var gridApps = new List<(string Label, string Glyph, PhoneTab Tab, int Badge)>
         {
             ("Friends", "F", PhoneTab.Friends, this.state.FriendRequests.Count(item => item.Status == FriendRequestStatus.Pending)),
+            ("Wallpapers", "W", PhoneTab.Wallpapers, 0),
             ("Settings", "S", PhoneTab.Settings, 0),
             ("Legal", "L", PhoneTab.Legal, 0),
             ("Privacy", "P", PhoneTab.Privacy, 0),
@@ -702,35 +756,66 @@ public sealed class PhoneWindow : Window
             }
         }
 
-        var spacerHeight = Math.Max(0f, totalHeight - topInset - totalGridHeight - dockHeight - bottomInset);
-        if (spacerHeight > 0f)
-        {
-            ImGui.Dummy(new Vector2(0f, spacerHeight));
-        }
+        var dockCursorY = Math.Max(ImGui.GetCursorPosY() + this.Scale(6f), totalHeight - dockHeight - bottomInset);
+        ImGui.SetCursorPosY(dockCursorY);
 
         this.DrawDock();
     }
 
     private string GetAppIconPath(PhoneTab tab)
     {
-        return tab switch
+        var path = tab switch
         {
             PhoneTab.Messages => this.configuration.MessagesIconPath,
             PhoneTab.Calls => this.configuration.CallsIconPath,
             PhoneTab.Contacts => this.configuration.ContactsIconPath,
             PhoneTab.Friends => this.configuration.FriendsIconPath,
             PhoneTab.Settings => this.configuration.SettingsIconPath,
+            PhoneTab.Wallpapers => NormalizeLegacyWallpaperIconPath(this.configuration.WallpapersIconPath),
             PhoneTab.Legal => this.configuration.LegalIconPath,
             PhoneTab.Privacy => this.configuration.PrivacyIconPath,
             PhoneTab.Support => this.configuration.SupportIconPath,
             PhoneTab.Staff => this.configuration.StaffIconPath,
             _ => string.Empty,
         };
+        return this.GetThemedBaseIconPath(path);
+    }
+
+    private static string NormalizeLegacyWallpaperIconPath(string path)
+    {
+        return path.Equals("embedded://icon.png", StringComparison.OrdinalIgnoreCase)
+            ? "embedded://app-wallpapers.png"
+            : path;
+    }
+
+    private string GetThemedBaseIconPath(string path)
+    {
+        if (!this.configuration.UseGreyscaleBaseIcons
+            || !path.StartsWith("embedded://", StringComparison.OrdinalIgnoreCase))
+        {
+            return path;
+        }
+
+        return path.ToLowerInvariant() switch
+        {
+            "embedded://app-phone.png" => "embedded://greyscale.app-phone.png",
+            "embedded://app-contacts.png" => "embedded://greyscale.app-contacts.png",
+            "embedded://app-friends.png" => "embedded://greyscale.app-friends.png",
+            "embedded://app-legal.png" => "embedded://greyscale.app-legal.png",
+            "embedded://app-messages.png" => "embedded://greyscale.app-messages.png",
+            "embedded://app-privacy.png" => "embedded://greyscale.app-privacy.png",
+            "embedded://app-settings.png" => "embedded://greyscale.app-settings.png",
+            "embedded://app-staff.png" => "embedded://greyscale.app-staff.png",
+            "embedded://app-support.png" => "embedded://greyscale.app-support.png",
+            "embedded://app-wallpapers.png" => "embedded://greyscale.app-wallpapers.png",
+            _ => path,
+        };
     }
 
     private void DrawAppIcon(string label, string glyph, PhoneTab tab, int badgeCount, float width, Vector4 topColor, Vector4 bottomColor)
     {
         var cardHeight = width;
+        using var transparentCell = ImRaii.PushColor(ImGuiCol.ChildBg, Vector4.Zero);
         using var group = ImRaii.Child($"app-{label}", new Vector2(width, cardHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
         if (!group.Success)
         {
@@ -748,12 +833,7 @@ public sealed class PhoneWindow : Window
         var iconSize = Math.Min(width * 0.66f, cardHeight * 0.68f);
         var iconMin = pos + new Vector2((width - iconSize) * 0.5f, iconTop);
         var iconMax = iconMin + new Vector2(iconSize, iconSize);
-        var cardMin = pos + new Vector2(this.Scale(2f), this.Scale(2f));
-        var cardMax = pos + new Vector2(width - this.Scale(2f), cardHeight - this.Scale(4f));
-        var cardCorner = Math.Max(this.Scale(24f), width * 0.18f);
         var iconCorner = Math.Max(this.Scale(18f), iconSize * 0.18f);
-        draw.AddRectFilled(cardMin, cardMax, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.028f)), cardCorner);
-        draw.AddRect(cardMin, cardMax, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.04f)), cardCorner);
         draw.AddRectFilled(
             iconMin + new Vector2(0f, Math.Max(this.Scale(5f), iconSize * 0.08f)),
             iconMax + new Vector2(0f, Math.Max(this.Scale(7f), iconSize * 0.1f)),
@@ -764,10 +844,12 @@ public sealed class PhoneWindow : Window
         if (iconTexture is not null)
         {
             draw.AddImageRounded(iconTexture.Handle, iconMin, iconMax, Vector2.Zero, Vector2.One, ImGui.GetColorU32(Vector4.One), iconCorner);
+            this.DrawIconTintOverlay(draw, iconMin, iconMax, iconCorner);
         }
         else
         {
             draw.AddRectFilledMultiColor(iconMin, iconMax, ImGui.GetColorU32(topColor), ImGui.GetColorU32(topColor), ImGui.GetColorU32(bottomColor), ImGui.GetColorU32(bottomColor));
+            this.DrawIconTintOverlay(draw, iconMin, iconMax, iconCorner);
             draw.AddRect(iconMin, iconMax, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.14f)), iconCorner, ImDrawFlags.None, 1.2f);
             var glyphFontSize = Math.Clamp(iconSize * 0.48f, this.Scale(24f), this.Scale(46f));
             var glyphSize = this.MeasureTextAtFontSize(glyph, glyphFontSize);
@@ -791,17 +873,22 @@ public sealed class PhoneWindow : Window
             this.activeTab = tab;
         }
 
-        draw.AddText(ImGui.GetFont(), labelFontSize, new Vector2(pos.X + (width - labelSize.X) * 0.5f, pos.Y + cardHeight - labelBottomPadding - labelSize.Y), ImGui.GetColorU32(Vector4.One), label);
+        this.DrawOutlinedText(draw, ImGui.GetFont(), labelFontSize, new Vector2(pos.X + (width - labelSize.X) * 0.5f, pos.Y + cardHeight - labelBottomPadding - labelSize.Y), label);
     }
 
     private void DrawDock()
     {
         var width = ImGui.GetContentRegionAvail().X;
-        var start = ImGui.GetCursorScreenPos();
+        var inset = this.Scale(8f);
+        var start = ImGui.GetCursorScreenPos() + new Vector2(inset, 0f);
+        width = Math.Max(this.Scale(220f), width - inset * 2f);
         this.GetDockMetrics(width, out var spacing, out var horizontalInset, out var cellWidth, out var iconSize, out var dockHeight);
         var draw = ImGui.GetWindowDrawList();
-        draw.AddRectFilled(start, start + new Vector2(width, dockHeight), ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.045f)), this.Scale(30f));
-        draw.AddRect(start, start + new Vector2(width, dockHeight), ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.06f)), this.Scale(30f));
+        var dockMax = start + new Vector2(width, dockHeight);
+        var dockRounding = this.Scale(22f);
+        draw.AddRectFilled(start + new Vector2(0f, this.Scale(3f)), dockMax + new Vector2(0f, this.Scale(3f)), ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.2f)), dockRounding, ImDrawFlags.RoundCornersAll);
+        draw.AddRectFilled(start, dockMax, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.13f)), dockRounding, ImDrawFlags.RoundCornersAll);
+        draw.AddRect(start, dockMax, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.22f)), dockRounding, ImDrawFlags.RoundCornersAll, this.Scale(1f));
 
         this.DrawDockIcon(start, horizontalInset, spacing, cellWidth, iconSize, 0, "Calls", "C", PhoneTab.Calls, this.state.MissedCallCount, new Vector4(0.23f, 0.83f, 0.57f, 1f), new Vector4(0.12f, 0.56f, 0.37f, 1f));
         this.DrawDockIcon(start, horizontalInset, spacing, cellWidth, iconSize, 1, "Contacts", "P", PhoneTab.Contacts, 0, new Vector4(0.98f, 0.62f, 0.39f, 1f), new Vector4(0.86f, 0.43f, 0.22f, 1f));
@@ -812,7 +899,7 @@ public sealed class PhoneWindow : Window
     {
         var draw = ImGui.GetWindowDrawList();
         var x = dockStart.X + horizontalInset + index * (cellWidth + spacing);
-        var y = dockStart.Y - Math.Max(this.Scale(14f), iconSize * 0.2f);
+        var y = dockStart.Y - iconSize * 0.4f;
         var iconMin = new Vector2(x + (cellWidth - iconSize) * 0.5f, y);
         var iconMax = iconMin + new Vector2(iconSize, iconSize);
         var iconCorner = Math.Max(this.Scale(18f), iconSize * 0.18f);
@@ -825,10 +912,12 @@ public sealed class PhoneWindow : Window
         if (iconTexture is not null)
         {
             draw.AddImageRounded(iconTexture.Handle, iconMin, iconMax, Vector2.Zero, Vector2.One, ImGui.GetColorU32(Vector4.One), iconCorner);
+            this.DrawIconTintOverlay(draw, iconMin, iconMax, iconCorner);
         }
         else
         {
             draw.AddRectFilledMultiColor(iconMin, iconMax, ImGui.GetColorU32(topColor), ImGui.GetColorU32(topColor), ImGui.GetColorU32(bottomColor), ImGui.GetColorU32(bottomColor));
+            this.DrawIconTintOverlay(draw, iconMin, iconMax, iconCorner);
             var glyphFontSize = Math.Clamp(iconSize * 0.48f, this.Scale(24f), this.Scale(42f));
             var glyphSize = this.MeasureTextAtFontSize(glyph, glyphFontSize);
             draw.AddText(ImGui.GetFont(), glyphFontSize, new Vector2(iconMin.X + (iconSize - glyphSize.X) * 0.5f, iconMin.Y + (iconSize - glyphSize.Y) * 0.5f), ImGui.GetColorU32(Vector4.One), glyph);
@@ -849,7 +938,7 @@ public sealed class PhoneWindow : Window
         labelFontSize = Math.Min(labelFontSize, this.Scale(21f));
         labelFontSize = this.FitTextToWidth(label, labelFontSize, cellWidth - this.Scale(10f));
         var labelSize = this.MeasureTextAtFontSize(label, labelFontSize);
-        draw.AddText(ImGui.GetFont(), labelFontSize, new Vector2(x + (cellWidth - labelSize.X) * 0.5f, iconMax.Y + Math.Max(this.Scale(8f), iconSize * 0.12f)), ImGui.GetColorU32(Vector4.One), label);
+        this.DrawOutlinedText(draw, ImGui.GetFont(), labelFontSize, new Vector2(x + (cellWidth - labelSize.X) * 0.5f, iconMax.Y + Math.Max(this.Scale(8f), iconSize * 0.12f)), label);
         ImGui.SetCursorScreenPos(new Vector2(x, y));
         if (ImGui.InvisibleButton($"{label}##dock", new Vector2(cellWidth, iconSize + this.Scale(42f))))
         {
@@ -1153,28 +1242,30 @@ public sealed class PhoneWindow : Window
                 var ticketUnread = this.state.SupportTickets.Sum(ticket => this.state.Conversations.FirstOrDefault(item => item.Id == ticket.ConversationId)?.UnreadCount ?? 0);
                 var staffUnread = this.state.Conversations.Where(this.IsStaffConversation).Sum(item => item.UnreadCount);
                 var regularUnread = this.state.Conversations.Where(item => !this.IsTicketConversation(item) && !this.IsStaffConversation(item)).Sum(item => item.UnreadCount);
+                var availableComposeWidth = ImGui.GetContentRegionAvail().X;
+                var actionSpacing = this.Scale(8f);
                 var tabWidth = this.IsCurrentUserStaff()
-                    ? (ImGui.GetContentRegionAvail().X - this.Scale(20f)) / 3f
-                    : (ImGui.GetContentRegionAvail().X - this.Scale(10f)) / 2f;
+                    ? (availableComposeWidth - actionSpacing * 2f) / 3f
+                    : (availableComposeWidth - actionSpacing) / 2f;
                 if (this.DrawPhonePillButton(regularUnread > 0 ? $"Regular [{regularUnread}]" : "Regular", new Vector2(tabWidth, this.Scale(32f))))
                 {
                     this.activeMessageFolder = MessageFolder.Regular;
                 }
-                ImGui.SameLine();
+                ImGui.SameLine(0f, actionSpacing);
                 if (this.DrawPhonePillButton(ticketUnread > 0 ? $"Tickets [{ticketUnread}]" : "Tickets", new Vector2(tabWidth, this.Scale(32f))))
                 {
                     this.activeMessageFolder = MessageFolder.Tickets;
                 }
                 if (this.IsCurrentUserStaff())
                 {
-                    ImGui.SameLine();
+                    ImGui.SameLine(0f, actionSpacing);
                     if (this.DrawPhonePillButton(staffUnread > 0 ? $"Staff [{staffUnread}]" : "Staff", new Vector2(tabWidth, this.Scale(32f))))
                     {
                         this.activeMessageFolder = MessageFolder.Staff;
                     }
                 }
-                var buttonWidth = Math.Max(this.Scale(112f), ImGui.CalcTextSize("New Chat").X + this.Scale(30f));
-                var inputWidth = Math.Max(this.Scale(140f), ImGui.GetContentRegionAvail().X - buttonWidth - this.Scale(10f));
+                var buttonWidth = Math.Min(this.Scale(102f), Math.Max(this.Scale(88f), ImGui.CalcTextSize("New Chat").X + this.Scale(24f)));
+                var inputWidth = Math.Max(this.Scale(120f), availableComposeWidth - buttonWidth - actionSpacing);
                 ImGui.SetNextItemWidth(inputWidth);
                 if (ImGui.InputTextWithHint("##direct-target", "Start typing a contact, username, or phone number", ref this.directMessageTarget, 64))
                 {
@@ -1189,7 +1280,7 @@ public sealed class PhoneWindow : Window
                         this.selectedDirectMessageContact = contact;
                         this.directMessageTarget = contact.PhoneNumber;
                     });
-                ImGui.SameLine();
+                ImGui.SameLine(0f, actionSpacing);
                 var directTarget = this.GetResolvedConversationTarget(this.selectedDirectMessageContact, this.directMessageTarget);
                 if (this.DrawPhonePillButton("New Chat", new Vector2(buttonWidth, this.Scale(32f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken) && !string.IsNullOrWhiteSpace(directTarget))
                 {
@@ -1214,11 +1305,11 @@ public sealed class PhoneWindow : Window
                 }
                 if (this.activeMessageFolder == MessageFolder.Regular)
                 {
-                    var groupButtonWidth = Math.Max(this.Scale(120f), ImGui.CalcTextSize("New Group").X + this.Scale(30f));
-                    var groupNameWidth = Math.Max(this.Scale(120f), ImGui.GetContentRegionAvail().X - groupButtonWidth - this.Scale(10f));
+                    var groupButtonWidth = Math.Min(this.Scale(108f), Math.Max(this.Scale(94f), ImGui.CalcTextSize("New Group").X + this.Scale(24f)));
+                    var groupNameWidth = Math.Max(this.Scale(120f), availableComposeWidth - groupButtonWidth - actionSpacing);
                     ImGui.SetNextItemWidth(groupNameWidth);
                     ImGui.InputTextWithHint("##group-name", "Group name", ref this.groupCreateName, 64);
-                    ImGui.SameLine();
+                    ImGui.SameLine(0f, actionSpacing);
                     if (this.DrawPhonePillButton("New Group", new Vector2(groupButtonWidth, this.Scale(32f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken) && !string.IsNullOrWhiteSpace(this.groupCreateName))
                     {
                         try
@@ -1539,8 +1630,8 @@ public sealed class PhoneWindow : Window
             ImGui.TextDisabled($"{directionLabel} - {durationLabel}");
             ImGui.TextDisabled(call.StartedUtc.LocalDateTime.ToString("g"));
 
-            var recallWidth = Math.Max(this.Scale(96f), ImGui.CalcTextSize("Recall").X + this.Scale(28f));
-            if (this.DrawPhonePillButton($"Recall##recent-call-{call.Id}", new Vector2(recallWidth, this.Scale(32f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+            var recallWidth = Math.Max(this.Scale(96f), ImGui.CalcTextSize("Call").X + this.Scale(28f));
+            if (this.DrawPhonePillButton($"Call##recent-call-{call.Id}", new Vector2(recallWidth, this.Scale(32f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
             {
                 try
                 {
@@ -2060,6 +2151,26 @@ public sealed class PhoneWindow : Window
             return;
         }
 
+        var tabWidth = (ImGui.GetContentRegionAvail().X - this.Scale(8f)) * 0.5f;
+        if (this.DrawPhonePillButton("General", new Vector2(tabWidth, this.Scale(34f))))
+        {
+            this.activeSettingsPane = SettingsPane.General;
+        }
+
+        ImGui.SameLine();
+        if (this.DrawPhonePillButton("Icons", new Vector2(tabWidth, this.Scale(34f))))
+        {
+            this.activeSettingsPane = SettingsPane.Icons;
+        }
+
+        ImGui.Separator();
+
+        if (this.activeSettingsPane == SettingsPane.Icons)
+        {
+            this.DrawIconSettings();
+            return;
+        }
+
         var isAuthenticated = !string.IsNullOrWhiteSpace(this.configuration.AuthToken);
         if (!isAuthenticated)
         {
@@ -2093,7 +2204,6 @@ public sealed class PhoneWindow : Window
                 this.activeTab = PhoneTab.Privacy;
                 return;
             }
-            this.SaveConfiguration();
             return;
         }
 
@@ -2206,11 +2316,22 @@ public sealed class PhoneWindow : Window
 
         ImGui.Separator();
         ImGui.TextDisabled("Appearance");
-        this.DrawEditableText("Accent Color", this.configuration.AccentColorHex, value => this.configuration.AccentColorHex = value, 16);
+        if (this.DrawEditableText("Accent Color", this.configuration.AccentColorHex, value => this.configuration.AccentColorHex = value, 16))
+        {
+            this.SaveConfiguration();
+        }
+
+        this.DrawIconTintSettings();
+        if (this.DrawPhonePillButton("Customize App Icons", new Vector2(-1f, this.Scale(32f))))
+        {
+            this.activeSettingsPane = SettingsPane.Icons;
+        }
+
         var lockViewport = this.configuration.LockViewport;
         if (ImGui.Checkbox("Lock viewport inside phone frame", ref lockViewport))
         {
             this.configuration.LockViewport = lockViewport;
+            this.SaveConfiguration();
         }
         this.DrawNotificationAnchorPicker();
 
@@ -2220,6 +2341,7 @@ public sealed class PhoneWindow : Window
         if (ImGui.Checkbox("Show spelling suggestions while typing", ref enableSpellCheck))
         {
             this.configuration.EnableSpellCheck = enableSpellCheck;
+            this.SaveConfiguration();
             this.pendingStatus = enableSpellCheck
                 ? "Spellcheck enabled"
                 : "Spellcheck disabled";
@@ -2278,6 +2400,7 @@ public sealed class PhoneWindow : Window
         if (ImGui.Checkbox("Reduce fan/background noise", ref reduceVoiceBackgroundNoise))
         {
             this.configuration.ReduceVoiceBackgroundNoise = reduceVoiceBackgroundNoise;
+            this.SaveConfiguration();
             this.pendingStatus = reduceVoiceBackgroundNoise
                 ? "Background noise reduction enabled"
                 : "Background noise reduction disabled";
@@ -2291,6 +2414,10 @@ public sealed class PhoneWindow : Window
             this.voiceChatSession.SetLevels(this.configuration.VoiceMicVolume, this.configuration.VoiceOutputVolume);
             this.pendingStatus = $"Mic volume set to {voiceMicVolumePercent:0}%";
         }
+        if (ImGui.IsItemDeactivatedAfterEdit())
+        {
+            this.SaveConfiguration();
+        }
 
         var voiceOutputVolumePercent = this.configuration.VoiceOutputVolume * 100f;
         if (ImGui.SliderFloat("Call Volume", ref voiceOutputVolumePercent, 25f, 300f, "%.0f%%"))
@@ -2298,6 +2425,10 @@ public sealed class PhoneWindow : Window
             this.configuration.VoiceOutputVolume = voiceOutputVolumePercent / 100f;
             this.voiceChatSession.SetLevels(this.configuration.VoiceMicVolume, this.configuration.VoiceOutputVolume);
             this.pendingStatus = $"Call volume set to {voiceOutputVolumePercent:0}%";
+        }
+        if (ImGui.IsItemDeactivatedAfterEdit())
+        {
+            this.SaveConfiguration();
         }
         ImGui.TextDisabled("These only affect TomestonePhone voice calls.");
 
@@ -2369,16 +2500,1074 @@ public sealed class PhoneWindow : Window
                 }
             }
         }
-
-        this.SaveConfiguration();
     }
+
+    private void DrawWallpapersApp()
+    {
+        using var wallpaperScroll = ImRaii.Child("wallpapers-app-scroll", new Vector2(-1f, 0f), true);
+        if (!wallpaperScroll.Success)
+        {
+            return;
+        }
+
+        this.DrawOutlinedText(ImGui.GetWindowDrawList(), ImGui.GetFont(), ImGui.GetFontSize(), ImGui.GetCursorScreenPos(), "Wallpaper Gallery");
+        ImGui.Dummy(ImGui.CalcTextSize("Wallpaper Gallery"));
+        this.DrawOutlinedWrappedText("Pick a bundled wallpaper or import your own PNG/JPG. Imported wallpapers stay on this computer only.");
+
+        var choices = this.GetWallpaperChoices();
+        var galleryHeight = this.GetWallpaperCardHeight(includeDeleteButton: true) + this.Scale(22f);
+        using (var gallery = ImRaii.Child("wallpaper-gallery", new Vector2(-1f, galleryHeight), true, ImGuiWindowFlags.HorizontalScrollbar | ImGuiWindowFlags.AlwaysHorizontalScrollbar))
+        {
+            if (gallery.Success)
+            {
+                for (var index = 0; index < choices.Count; index++)
+                {
+                    this.DrawWallpaperChoiceCard(choices[index]);
+                    if (index < choices.Count - 1)
+                    {
+                        ImGui.SameLine(0f, this.Scale(12f));
+                    }
+                }
+            }
+        }
+
+        ImGui.Separator();
+        ImGui.TextDisabled("Add Wallpaper");
+
+        var importWidth = Math.Max(this.Scale(164f), ImGui.CalcTextSize("Import and Apply").X + this.Scale(30f));
+        if (this.DrawPhonePillButton("Import and Apply", new Vector2(importWidth, this.Scale(32f))))
+        {
+            this.OpenLocalImagePicker(LocalImagePickerTarget.Wallpaper);
+        }
+
+        ImGui.SameLine();
+        var resetWidth = Math.Max(this.Scale(96f), ImGui.CalcTextSize("Reset").X + this.Scale(30f));
+        if (this.DrawPhonePillButton("Reset", new Vector2(resetWidth, this.Scale(32f))))
+        {
+            this.ResetBackgroundImage();
+        }
+        this.DrawLocalImagePickerPopup();
+
+        ImGui.Separator();
+        this.DrawWallpaperModeControls();
+        ImGui.Separator();
+        this.DrawSolidBackgroundSettings();
+    }
+
+    private void DrawOutlinedWrappedText(string text)
+    {
+        using var wrap = new ImRaii.TextWrapDisposable().Push(ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X);
+        var size = ImGui.CalcTextSize(text, false, ImGui.GetContentRegionAvail().X);
+        this.DrawOutlinedText(ImGui.GetWindowDrawList(), ImGui.GetFont(), ImGui.GetFontSize(), ImGui.GetCursorScreenPos(), text);
+        ImGui.Dummy(size);
+    }
+
+    private void DrawSolidBackgroundSettings()
+    {
+        ImGui.TextDisabled("Solid Background");
+        var useSolid = this.configuration.UseSolidBackgroundColor;
+        if (ImGui.Checkbox("Use solid color behind wallpaper", ref useSolid))
+        {
+            this.configuration.UseSolidBackgroundColor = useSolid;
+            this.SaveConfiguration();
+        }
+
+        if (this.DrawEditableText("Background Hex", this.configuration.SolidBackgroundColorHex, value => this.configuration.SolidBackgroundColorHex = value, 16))
+        {
+            this.SaveConfiguration();
+        }
+
+        var alphaPercent = this.configuration.SolidBackgroundAlpha * 100f;
+        if (ImGui.SliderFloat("Background Alpha", ref alphaPercent, 0f, 100f, "%.0f%%"))
+        {
+            this.configuration.SolidBackgroundAlpha = Math.Clamp(alphaPercent / 100f, 0f, 1f);
+        }
+
+        if (ImGui.IsItemDeactivatedAfterEdit())
+        {
+            this.SaveConfiguration();
+        }
+    }
+
+    private void DrawWallpaperModeControls()
+    {
+        if (string.IsNullOrWhiteSpace(this.configuration.BackgroundImagePath))
+        {
+            ImGui.TextDisabled("No wallpaper selected.");
+            return;
+        }
+
+        ImGui.TextDisabled($"Active: {this.GetWallpaperDisplayName(this.configuration.BackgroundImagePath)}");
+        var mode = this.configuration.BackgroundMode;
+        using (var combo = ImRaii.Combo("Wallpaper Mode", GetWallpaperModeLabel(mode)))
+        {
+            if (combo.Success)
+            {
+                foreach (PhoneWallpaperMode value in Enum.GetValues(typeof(PhoneWallpaperMode)))
+                {
+                    var selected = value == mode;
+                    if (ImGui.Selectable(GetWallpaperModeLabel(value), selected))
+                    {
+                        this.configuration.BackgroundMode = value;
+                        if (value != PhoneWallpaperMode.Custom)
+                        {
+                            this.configuration.BackgroundZoom = 1f;
+                            this.configuration.BackgroundOffsetX = 0f;
+                            this.configuration.BackgroundOffsetY = 0f;
+                        }
+
+                        this.SaveConfiguration();
+                    }
+
+                    if (selected)
+                    {
+                        ImGui.SetItemDefaultFocus();
+                    }
+                }
+            }
+        }
+
+        if (this.configuration.BackgroundMode == PhoneWallpaperMode.Custom)
+        {
+            this.DrawWallpaperCustomEditor();
+        }
+    }
+
+    private IReadOnlyList<WallpaperChoice> GetWallpaperChoices()
+    {
+        var choices = new List<WallpaperChoice>
+        {
+            new("Eorzea", StartupSplashLoadingPath, true),
+            new("Midnight", StartupSplashBlankPath, true),
+        };
+
+        var directory = this.configuration.GetLocalWallpaperDirectory();
+        foreach (var path in Directory.EnumerateFiles(directory)
+                     .Where(IsSupportedWallpaperFile)
+                     .OrderBy(Path.GetFileNameWithoutExtension, StringComparer.OrdinalIgnoreCase))
+        {
+            choices.Add(new(Path.GetFileNameWithoutExtension(path), path, false));
+        }
+
+        if (!string.IsNullOrWhiteSpace(this.configuration.BackgroundImagePath)
+            && File.Exists(this.configuration.BackgroundImagePath)
+            && choices.All(item => !string.Equals(item.Path, this.configuration.BackgroundImagePath, StringComparison.OrdinalIgnoreCase)))
+        {
+            choices.Add(new(this.GetWallpaperDisplayName(this.configuration.BackgroundImagePath), this.configuration.BackgroundImagePath, false));
+        }
+
+        return choices;
+    }
+
+    private static bool IsSupportedWallpaperFile(string path)
+    {
+        var extension = Path.GetExtension(path);
+        return extension.Equals(".png", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string GetWallpaperDisplayName(string path)
+    {
+        if (path.Equals(StartupSplashLoadingPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return "Eorzea";
+        }
+
+        if (path.Equals(StartupSplashBlankPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return "Midnight";
+        }
+
+        return Path.GetFileNameWithoutExtension(path);
+    }
+
+    private void DrawWallpaperChoiceCard(WallpaperChoice choice)
+    {
+        var cardWidth = this.Scale(120f);
+        var previewHeight = this.Scale(154f);
+        var cardHeight = this.GetWallpaperCardHeight(includeDeleteButton: !choice.IsBundled);
+        using var card = ImRaii.Child($"wallpaper-card-{choice.Path}", new Vector2(cardWidth, cardHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+        if (!card.Success)
+        {
+            return;
+        }
+
+        var active = string.Equals(this.configuration.BackgroundImagePath, choice.Path, StringComparison.OrdinalIgnoreCase);
+        var previewMin = ImGui.GetCursorScreenPos();
+        var previewMax = previewMin + new Vector2(cardWidth, previewHeight);
+        var draw = ImGui.GetWindowDrawList();
+        draw.AddRectFilled(previewMin, previewMax, ImGui.GetColorU32(new Vector4(0.055f, 0.065f, 0.09f, 1f)), this.Scale(20f));
+        var texture = this.appIconRenderer.TryGetTexture(choice.Path);
+        if (texture is not null)
+        {
+            draw.AddImageRounded(texture.Handle, previewMin, previewMax, Vector2.Zero, Vector2.One, ImGui.GetColorU32(Vector4.One), this.Scale(20f));
+        }
+
+        draw.AddRect(previewMin, previewMax, ImGui.GetColorU32(active ? new Vector4(0.52f, 0.72f, 1f, 0.9f) : new Vector4(1f, 1f, 1f, 0.14f)), this.Scale(20f), ImDrawFlags.None, active ? 2.2f : 1f);
+        ImGui.InvisibleButton($"##wallpaper-preview-{choice.Path}", new Vector2(cardWidth, previewHeight));
+        if (ImGui.IsItemClicked())
+        {
+            this.ApplyWallpaper(choice.Path);
+        }
+
+        var label = choice.IsBundled ? $"{choice.Name}*" : choice.Name;
+        var visibleLabel = this.FitTextToWidth(label, this.Scale(14f), cardWidth - this.Scale(6f));
+        var labelSize = this.MeasureTextAtFontSize(label, visibleLabel);
+        draw.AddText(ImGui.GetFont(), visibleLabel, new Vector2(previewMin.X, previewMax.Y + this.Scale(8f)), ImGui.GetColorU32(Vector4.One), label);
+        ImGui.SetCursorScreenPos(new Vector2(previewMin.X, previewMax.Y + this.Scale(8f) + labelSize.Y + this.Scale(8f)));
+        if (this.DrawPhonePillButton(active ? "Active" : "Apply", new Vector2(-1f, this.Scale(30f))) && !active)
+        {
+            this.ApplyWallpaper(choice.Path);
+        }
+
+        if (!choice.IsBundled)
+        {
+            using var deleteColor = ImRaii.PushColor(ImGuiCol.Button, new Vector4(0.72f, 0.24f, 0.28f, 0.78f));
+            using var deleteHoverColor = ImRaii.PushColor(ImGuiCol.ButtonHovered, new Vector4(0.82f, 0.3f, 0.34f, 0.9f));
+            using var deleteActiveColor = ImRaii.PushColor(ImGuiCol.ButtonActive, new Vector4(0.92f, 0.36f, 0.4f, 1f));
+            if (this.DrawPhonePillButton("Delete", new Vector2(-1f, this.Scale(30f))))
+            {
+                this.DeleteUserWallpaper(choice.Path);
+            }
+        }
+    }
+
+    private float GetWallpaperCardHeight(bool includeDeleteButton)
+    {
+        var buttonCount = includeDeleteButton ? 2 : 1;
+        return this.Scale(154f)
+            + this.Scale(8f)
+            + ImGui.GetTextLineHeight()
+            + this.Scale(8f)
+            + buttonCount * this.Scale(30f)
+            + Math.Max(0, buttonCount - 1) * ImGui.GetStyle().ItemSpacing.Y
+            + this.Scale(10f);
+    }
+
+    private void ApplyWallpaper(string path)
+    {
+        this.configuration.BackgroundImagePath = path;
+        this.configuration.BackgroundMode = PhoneWallpaperMode.Fit;
+        this.configuration.BackgroundZoom = 1f;
+        this.configuration.BackgroundOffsetX = 0f;
+        this.configuration.BackgroundOffsetY = 0f;
+        this.SaveConfiguration();
+        this.pendingStatus = $"Wallpaper applied: {this.GetWallpaperDisplayName(path)}";
+    }
+
+    private void DeleteUserWallpaper(string path)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(path) || path.StartsWith("embedded://", StringComparison.OrdinalIgnoreCase))
+            {
+                this.pendingStatus = "Bundled wallpapers cannot be deleted";
+                return;
+            }
+
+            var fullPath = Path.GetFullPath(path);
+            var wallpaperDirectory = Path.GetFullPath(this.configuration.GetLocalWallpaperDirectory()).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!fullPath.StartsWith(wallpaperDirectory, StringComparison.OrdinalIgnoreCase))
+            {
+                this.pendingStatus = "Only imported wallpapers can be deleted";
+                return;
+            }
+
+            var wasActive = string.Equals(this.configuration.BackgroundImagePath, path, StringComparison.OrdinalIgnoreCase);
+            this.appIconRenderer.Invalidate(path);
+            if (File.Exists(fullPath))
+            {
+                File.Delete(fullPath);
+            }
+
+            if (wasActive)
+            {
+                this.configuration.BackgroundImagePath = string.Empty;
+                this.configuration.BackgroundMode = PhoneWallpaperMode.Fit;
+                this.configuration.BackgroundZoom = 1f;
+                this.configuration.BackgroundOffsetX = 0f;
+                this.configuration.BackgroundOffsetY = 0f;
+            }
+
+            this.SaveConfiguration();
+            this.pendingStatus = "Wallpaper deleted";
+        }
+        catch (Exception ex)
+        {
+            this.pendingStatus = $"Wallpaper delete failed: {this.SanitizeUserFacingError(ex.Message)}";
+        }
+    }
+
+    private static string GetWallpaperModeLabel(PhoneWallpaperMode mode)
+    {
+        return mode switch
+        {
+            PhoneWallpaperMode.Stretch => "Stretch",
+            PhoneWallpaperMode.Custom => "Custom drag/zoom",
+            _ => "Scale to fit",
+        };
+    }
+
+    private void DrawWallpaperCustomEditor()
+    {
+        this.DrawOutlinedText(ImGui.GetWindowDrawList(), ImGui.GetFont(), ImGui.GetFontSize(), ImGui.GetCursorScreenPos(), "Drag the preview to position it, then adjust zoom.");
+        ImGui.Dummy(ImGui.CalcTextSize("Drag the preview to position it, then adjust zoom."));
+
+        var available = ImGui.GetContentRegionAvail();
+        var controlsWidth = Math.Min(this.Scale(220f), Math.Max(this.Scale(160f), available.X * 0.42f));
+        var useSideControls = available.X >= this.Scale(360f);
+        var reservedControlHeight = useSideControls ? this.Scale(10f) : this.Scale(128f);
+        var previewHeight = Math.Clamp(available.Y - reservedControlHeight, this.Scale(120f), this.Scale(210f));
+        var previewWidth = previewHeight * PhoneAspectRatio;
+        if (useSideControls)
+        {
+            previewWidth = Math.Min(previewWidth, Math.Max(this.Scale(120f), available.X - controlsWidth - ImGui.GetStyle().ItemSpacing.X));
+            previewHeight = previewWidth / PhoneAspectRatio;
+        }
+        else if (previewWidth > available.X)
+        {
+            previewWidth = available.X;
+            previewHeight = previewWidth / PhoneAspectRatio;
+        }
+
+        var previewMin = ImGui.GetCursorScreenPos();
+        var previewMax = previewMin + new Vector2(previewWidth, previewHeight);
+        var previewRounding = this.Scale(22f);
+        ImGui.InvisibleButton("##WallpaperPreviewDrag", new Vector2(previewWidth, previewHeight));
+        var hovered = ImGui.IsItemHovered();
+        var active = ImGui.IsItemActive();
+        var releasedDrag = ImGui.IsItemDeactivated();
+        var draw = ImGui.GetWindowDrawList();
+        draw.AddRectFilled(previewMin, previewMax, ImGui.GetColorU32(new Vector4(0.055f, 0.065f, 0.09f, 1f)), previewRounding);
+        this.DrawWallpaper(previewMin, previewMax, previewRounding);
+        draw.AddRect(previewMin, previewMax, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, hovered ? 0.22f : 0.1f)), previewRounding);
+
+        if (active && ImGui.IsMouseDragging(ImGuiMouseButton.Left))
+        {
+            var delta = ImGui.GetIO().MouseDelta;
+            this.configuration.BackgroundOffsetX = Math.Clamp(this.configuration.BackgroundOffsetX - (delta.X / Math.Max(1f, previewWidth)) * 2f, -1f, 1f);
+            this.configuration.BackgroundOffsetY = Math.Clamp(this.configuration.BackgroundOffsetY - (delta.Y / Math.Max(1f, previewHeight)) * 2f, -1f, 1f);
+        }
+
+        if (releasedDrag)
+        {
+            this.SaveConfiguration();
+        }
+
+        if (useSideControls)
+        {
+            ImGui.SameLine();
+            var controls = ImRaii.Child("wallpaper-custom-controls", new Vector2(-1f, previewHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+            if (!controls.Success)
+            {
+                controls.Dispose();
+                return;
+            }
+
+            this.DrawWallpaperCustomEditorControls(useSideControls);
+            controls.Dispose();
+            return;
+        }
+
+        this.DrawWallpaperCustomEditorControls(useSideControls);
+    }
+
+    private void DrawWallpaperCustomEditorControls(bool compact)
+    {
+        var zoomPercent = Math.Clamp(this.configuration.BackgroundZoom, 1f, 2.75f) * 100f;
+        if (ImGui.SliderFloat("Wallpaper Zoom", ref zoomPercent, 100f, 275f, "%.0f%%"))
+        {
+            this.configuration.BackgroundZoom = zoomPercent / 100f;
+        }
+
+        if (ImGui.IsItemDeactivatedAfterEdit())
+        {
+            this.SaveConfiguration();
+        }
+
+        var centerWidth = compact
+            ? Math.Min(this.Scale(180f), ImGui.GetContentRegionAvail().X)
+            : -1f;
+        if (this.DrawPhonePillButton("Center Wallpaper", new Vector2(centerWidth, this.Scale(32f))))
+        {
+            this.configuration.BackgroundOffsetX = 0f;
+            this.configuration.BackgroundOffsetY = 0f;
+            this.configuration.BackgroundZoom = 1f;
+            this.SaveConfiguration();
+        }
+
+        if (!compact || ImGui.GetContentRegionAvail().Y > this.Scale(44f))
+        {
+            this.DrawOutlinedText(ImGui.GetWindowDrawList(), ImGui.GetFont(), ImGui.GetFontSize(), ImGui.GetCursorScreenPos(), "Custom position and zoom are saved automatically.");
+            ImGui.Dummy(ImGui.CalcTextSize("Custom position and zoom are saved automatically."));
+        }
+    }
+
+    private void DrawIconSettings()
+    {
+        ImGui.TextDisabled("App Icons");
+        ImGui.TextWrapped("Choose a PNG or JPG, then assign it to an app. Images must already be exactly 256x256 and keep the same rounded corners on the home screen.");
+        ImGui.SetNextItemWidth(-1f);
+        ImGui.InputTextWithHint("##IconImportPath", "PNG or JPG file path", ref this.iconImportPath, 512);
+        this.DrawIconTintSettings();
+        this.DrawIconSizeWarningPopup();
+
+        using var iconList = ImRaii.Child("settings-icon-list", new Vector2(-1f, 0f), true);
+        if (!iconList.Success)
+        {
+            return;
+        }
+
+        var icons = this.GetCustomizableAppIcons();
+        for (var index = 0; index < icons.Count; index++)
+        {
+            this.DrawIconSettingsRow(icons[index]);
+            if (index < icons.Count - 1)
+            {
+                ImGui.Dummy(new Vector2(0f, this.Scale(8f)));
+                ImGui.Separator();
+                ImGui.Dummy(new Vector2(0f, this.Scale(8f)));
+            }
+        }
+    }
+
+    private void DrawIconTintSettings()
+    {
+        ImGui.Separator();
+        ImGui.TextDisabled("App Icon Theme");
+        var useGreyscaleBaseIcons = this.configuration.UseGreyscaleBaseIcons;
+        if (ImGui.Checkbox("Use greyscale bundled icons for tinting", ref useGreyscaleBaseIcons))
+        {
+            this.configuration.UseGreyscaleBaseIcons = useGreyscaleBaseIcons;
+            this.SaveConfiguration();
+        }
+
+        var useIconTint = this.configuration.UseIconTint;
+        if (ImGui.Checkbox("Apply color tint to app and dock icons", ref useIconTint))
+        {
+            this.configuration.UseIconTint = useIconTint;
+            this.SaveConfiguration();
+        }
+
+        if (this.DrawEditableText("App/Dock Tint Hex", this.configuration.IconTintColorHex, value => this.configuration.IconTintColorHex = value, 16))
+        {
+            this.SaveConfiguration();
+        }
+
+        var tintRgb = this.ParseHexColor(this.configuration.IconTintColorHex, new Vector4(0.85f, 0.71f, 0.43f, 1f));
+        var red = tintRgb.X * 255f;
+        var green = tintRgb.Y * 255f;
+        var blue = tintRgb.Z * 255f;
+        var changedRgb = false;
+        changedRgb |= ImGui.SliderFloat("Tint Red", ref red, 0f, 255f, "%.0f");
+        var saveRgb = ImGui.IsItemDeactivatedAfterEdit();
+        changedRgb |= ImGui.SliderFloat("Tint Green", ref green, 0f, 255f, "%.0f");
+        saveRgb |= ImGui.IsItemDeactivatedAfterEdit();
+        changedRgb |= ImGui.SliderFloat("Tint Blue", ref blue, 0f, 255f, "%.0f");
+        saveRgb |= ImGui.IsItemDeactivatedAfterEdit();
+        if (changedRgb)
+        {
+            this.configuration.IconTintColorHex = ToHexColor(red, green, blue);
+        }
+
+        if (saveRgb)
+        {
+            this.SaveConfiguration();
+        }
+
+        var tintAlpha = this.configuration.IconTintAlpha * 100f;
+        if (ImGui.SliderFloat("App/Dock Tint Alpha", ref tintAlpha, 0f, 85f, "%.0f%%"))
+        {
+            this.configuration.IconTintAlpha = Math.Clamp(tintAlpha / 100f, 0f, 0.85f);
+        }
+
+        if (ImGui.IsItemDeactivatedAfterEdit())
+        {
+            this.SaveConfiguration();
+        }
+
+        this.DrawIconTintPreview();
+        if (this.DrawPhonePillButton("Reset App/Dock Tint", new Vector2(-1f, this.Scale(32f))))
+        {
+            this.configuration.UseIconTint = false;
+            this.configuration.IconTintColorHex = "#D9B56D";
+            this.configuration.IconTintAlpha = 0.22f;
+            this.SaveConfiguration();
+        }
+
+        ImGui.TextDisabled("Tint draws over home and dock icons like a translucent iOS-style hue; it does not alter the saved images.");
+        ImGui.Separator();
+    }
+
+    private void DrawIconTintPreview()
+    {
+        ImGui.TextDisabled("Live Preview");
+        var previewHeight = this.Scale(108f);
+        using var preview = ImRaii.Child("icon-tint-live-preview", new Vector2(-1f, previewHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+        if (!preview.Success)
+        {
+            return;
+        }
+
+        var draw = ImGui.GetWindowDrawList();
+        var start = ImGui.GetCursorScreenPos();
+        var availableWidth = ImGui.GetContentRegionAvail().X;
+        var icons = new[]
+        {
+            (Label: "Calls", Path: this.GetAppIconPath(PhoneTab.Calls)),
+            (Label: "Contacts", Path: this.GetAppIconPath(PhoneTab.Contacts)),
+            (Label: "Messages", Path: this.GetAppIconPath(PhoneTab.Messages)),
+        };
+        var iconSize = this.Scale(58f);
+        var cellWidth = this.Scale(92f);
+        var totalWidth = cellWidth * icons.Length;
+        var leftInset = Math.Max(0f, (availableWidth - totalWidth) * 0.5f);
+        var topInset = Math.Max(0f, (previewHeight - iconSize - ImGui.GetTextLineHeight() - this.Scale(14f)) * 0.5f);
+
+        for (var index = 0; index < icons.Length; index++)
+        {
+            var icon = icons[index];
+            var cellX = start.X + leftInset + index * cellWidth;
+            var iconMin = new Vector2(cellX + (cellWidth - iconSize) * 0.5f, start.Y + topInset);
+            var iconMax = iconMin + new Vector2(iconSize, iconSize);
+            var rounding = Math.Max(this.Scale(14f), iconSize * 0.18f);
+            draw.AddRectFilled(iconMin + new Vector2(0f, this.Scale(5f)), iconMax + new Vector2(0f, this.Scale(7f)), ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.18f)), rounding);
+            var texture = this.appIconRenderer.TryGetIcon(icon.Path);
+            if (texture is not null)
+            {
+                draw.AddImageRounded(texture.Handle, iconMin, iconMax, Vector2.Zero, Vector2.One, ImGui.GetColorU32(Vector4.One), rounding);
+                this.DrawIconTintOverlay(draw, iconMin, iconMax, rounding);
+            }
+
+            var labelSize = ImGui.CalcTextSize(icon.Label);
+            this.DrawOutlinedText(draw, ImGui.GetFont(), ImGui.GetFontSize(), new Vector2(cellX + (cellWidth - labelSize.X) * 0.5f, iconMax.Y + this.Scale(8f)), icon.Label);
+        }
+
+        ImGui.Dummy(new Vector2(availableWidth, previewHeight - this.Scale(6f)));
+    }
+
+    private void DrawIconSizeWarningPopup()
+    {
+        if (this.showIconSizeWarningModal)
+        {
+            this.showIconSizeWarningModal = false;
+            this.PreparePhoneModal(this.Scale(320f, 150f));
+            ImGui.OpenPopup("Icon Resize Needed");
+        }
+
+        using var popup = ImRaii.PopupModal("Icon Resize Needed", ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+        if (!popup.Success)
+        {
+            return;
+        }
+
+        ImGui.TextWrapped(this.iconSizeWarningMessage);
+        ImGui.Spacing();
+        if (this.DrawPhonePillButton("Okay", new Vector2(-1f, this.Scale(32f))))
+        {
+            ImGui.CloseCurrentPopup();
+        }
+    }
+
+    private IReadOnlyList<CustomizableAppIcon> GetCustomizableAppIcons()
+    {
+        return
+        [
+            new("friends", "Friends", PhoneTab.Friends, () => this.configuration.FriendsIconPath, value => this.configuration.FriendsIconPath = value, "embedded://app-friends.png"),
+            new("wallpapers", "Wallpapers", PhoneTab.Wallpapers, () => NormalizeLegacyWallpaperIconPath(this.configuration.WallpapersIconPath), value => this.configuration.WallpapersIconPath = value, "embedded://app-wallpapers.png"),
+            new("settings", "Settings", PhoneTab.Settings, () => this.configuration.SettingsIconPath, value => this.configuration.SettingsIconPath = value, "embedded://app-settings.png"),
+            new("legal", "Legal", PhoneTab.Legal, () => this.configuration.LegalIconPath, value => this.configuration.LegalIconPath = value, "embedded://app-legal.png"),
+            new("privacy", "Privacy", PhoneTab.Privacy, () => this.configuration.PrivacyIconPath, value => this.configuration.PrivacyIconPath = value, "embedded://app-privacy.png"),
+            new("support", "Support", PhoneTab.Support, () => this.configuration.SupportIconPath, value => this.configuration.SupportIconPath = value, "embedded://app-support.png"),
+            new("staff", "Staff", PhoneTab.Staff, () => this.configuration.StaffIconPath, value => this.configuration.StaffIconPath = value, "embedded://app-staff.png"),
+            new("calls", "Calls", PhoneTab.Calls, () => this.configuration.CallsIconPath, value => this.configuration.CallsIconPath = value, "embedded://app-phone.png"),
+            new("contacts", "Contacts", PhoneTab.Contacts, () => this.configuration.ContactsIconPath, value => this.configuration.ContactsIconPath = value, "embedded://app-contacts.png"),
+            new("messages", "Messages", PhoneTab.Messages, () => this.configuration.MessagesIconPath, value => this.configuration.MessagesIconPath = value, "embedded://app-messages.png"),
+        ];
+    }
+
+    private void DrawIconSettingsRow(CustomizableAppIcon app)
+    {
+        var iconSize = this.Scale(56f);
+        var rowStart = ImGui.GetCursorScreenPos();
+        var configuredPath = app.GetPath();
+        var displayPath = this.GetThemedBaseIconPath(configuredPath);
+        var texture = this.appIconRenderer.TryGetIcon(displayPath);
+        var draw = ImGui.GetWindowDrawList();
+        var iconMax = rowStart + new Vector2(iconSize, iconSize);
+        var iconCorner = Math.Max(this.Scale(14f), iconSize * 0.18f);
+        draw.AddRectFilled(rowStart + new Vector2(0f, this.Scale(4f)), iconMax + new Vector2(0f, this.Scale(7f)), ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.16f)), iconCorner);
+        if (texture is not null)
+        {
+            draw.AddImageRounded(texture.Handle, rowStart, iconMax, Vector2.Zero, Vector2.One, ImGui.GetColorU32(Vector4.One), iconCorner);
+        }
+        else
+        {
+            draw.AddRectFilled(rowStart, iconMax, ImGui.GetColorU32(new Vector4(0.22f, 0.27f, 0.38f, 1f)), iconCorner);
+        }
+
+        ImGui.Dummy(new Vector2(iconSize, iconSize));
+        ImGui.SameLine();
+        using var details = ImRaii.Child($"icon-settings-row-{app.Id}", new Vector2(-1f, this.Scale(82f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+        if (!details.Success)
+        {
+            return;
+        }
+
+        ImGui.TextUnformatted(app.Name);
+        ImGui.TextDisabled(configuredPath.StartsWith("embedded://", StringComparison.OrdinalIgnoreCase) ? "Using bundled icon" : Path.GetFileName(configuredPath));
+        var buttonWidth = (ImGui.GetContentRegionAvail().X - this.Scale(8f)) * 0.5f;
+        if (this.DrawPhonePillButton($"Apply Image##icon-apply-{app.Id}", new Vector2(buttonWidth, this.Scale(30f))))
+        {
+            this.TryImportAppIcon(app, this.iconImportPath);
+        }
+
+        ImGui.SameLine();
+        if (this.DrawPhonePillButton($"Reset##icon-reset-{app.Id}", new Vector2(buttonWidth, this.Scale(30f))))
+        {
+            this.ResetAppIcon(app);
+        }
+    }
+
+    private void TryImportAppIcon(CustomizableAppIcon app, string sourcePath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(sourcePath))
+            {
+                this.pendingStatus = "Choose a PNG or JPG icon first";
+                return;
+            }
+
+            var trimmed = sourcePath.Trim().Trim('"');
+            if (!File.Exists(trimmed) || !IsSupportedWallpaperFile(trimmed))
+            {
+                this.pendingStatus = "Icon must be a PNG or JPG file";
+                return;
+            }
+
+            var destinationPath = this.configuration.GetLocalIconImportPath(app.Id, trimmed);
+            Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+            using var image = Image.Load<Rgba32>(trimmed);
+            if (image.Width != 256 || image.Height != 256)
+            {
+                this.iconSizeWarningMessage = $"That icon is {image.Width}x{image.Height}. Please resize it to exactly 256x256 and try again.";
+                this.showIconSizeWarningModal = true;
+                this.pendingStatus = "Icon must be exactly 256x256";
+                return;
+            }
+
+            image.Save(destinationPath, new PngEncoder());
+
+            this.appIconRenderer.Invalidate(app.GetPath());
+            app.SetPath(destinationPath);
+            this.iconImportPath = string.Empty;
+            this.SaveConfiguration();
+            this.pendingStatus = $"{app.Name} icon updated";
+        }
+        catch (Exception ex)
+        {
+            this.pendingStatus = $"Icon import failed: {this.SanitizeUserFacingError(ex.Message)}";
+        }
+    }
+
+    private void ResetAppIcon(CustomizableAppIcon app)
+    {
+        this.appIconRenderer.Invalidate(app.GetPath());
+        app.SetPath(app.DefaultPath);
+        this.SaveConfiguration();
+        this.pendingStatus = $"{app.Name} icon reset";
+    }
+
+    private void OpenLocalImagePicker(LocalImagePickerTarget target)
+    {
+        this.localImagePickerTarget = target;
+        if (string.IsNullOrWhiteSpace(this.localImagePickerDirectory) || !Directory.Exists(this.localImagePickerDirectory))
+        {
+            this.localImagePickerDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+            if (string.IsNullOrWhiteSpace(this.localImagePickerDirectory) || !Directory.Exists(this.localImagePickerDirectory))
+            {
+                this.localImagePickerDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            }
+        }
+
+        this.openLocalImagePicker = true;
+    }
+
+    private void DrawLocalImagePickerPopup()
+    {
+        if (this.openLocalImagePicker)
+        {
+            this.openLocalImagePicker = false;
+            this.selectedLocalImagePath = null;
+            this.localImagePickerFileName = string.Empty;
+            this.PreparePhoneModal(this.Scale(760f, 520f));
+            ImGui.OpenPopup("Pick Image");
+        }
+
+        using var pickerWindowRounding = ImRaii.PushStyle(ImGuiStyleVar.WindowRounding, 0f);
+        using var pickerPopupRounding = ImRaii.PushStyle(ImGuiStyleVar.PopupRounding, 0f);
+        using var pickerChildRounding = ImRaii.PushStyle(ImGuiStyleVar.ChildRounding, 0f);
+        using var pickerFrameRounding = ImRaii.PushStyle(ImGuiStyleVar.FrameRounding, 0f);
+        using var pickerGrabRounding = ImRaii.PushStyle(ImGuiStyleVar.GrabRounding, 0f);
+        using var popup = ImRaii.PopupModal("Pick Image", ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+        if (!popup.Success)
+        {
+            return;
+        }
+
+        this.DrawLocalImagePickerToolbar();
+        ImGui.Separator();
+
+        var sidebarWidth = this.Scale(108f);
+        var bodyHeight = this.Scale(288f);
+        using (var sidebar = ImRaii.Child("local-image-picker-sidebar", new Vector2(sidebarWidth, bodyHeight), true))
+        {
+            if (sidebar.Success)
+            {
+                this.DrawLocalImagePickerSidebar();
+            }
+        }
+
+        ImGui.SameLine();
+        var previewWidth = this.Scale(156f);
+        var fileWidth = Math.Max(this.Scale(390f), ImGui.GetContentRegionAvail().X - previewWidth - ImGui.GetStyle().ItemSpacing.X);
+        using (var files = ImRaii.Child("local-image-picker-files", new Vector2(fileWidth, bodyHeight), true))
+        {
+            if (files.Success)
+            {
+                this.DrawLocalImagePickerFileList();
+            }
+        }
+
+        ImGui.SameLine();
+        using (var preview = ImRaii.Child("local-image-picker-preview", new Vector2(previewWidth, bodyHeight), true, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+        {
+            if (preview.Success)
+            {
+                this.DrawLocalImagePickerPreview();
+            }
+        }
+
+        ImGui.Separator();
+        ImGui.TextDisabled("File Name:");
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(Math.Max(this.Scale(220f), ImGui.GetContentRegionAvail().X - this.Scale(170f)));
+        ImGui.InputText("##local-image-picker-file-name", ref this.localImagePickerFileName, 260, ImGuiInputTextFlags.ReadOnly);
+        ImGui.SameLine();
+        ImGui.TextDisabled("*.png;*.jpg;*.jpeg");
+
+        var okEnabled = !string.IsNullOrWhiteSpace(this.selectedLocalImagePath) && File.Exists(this.selectedLocalImagePath);
+        var okWidth = this.Scale(138f);
+        var cancelWidth = this.Scale(94f);
+        ImGui.SetCursorPosX(Math.Max(ImGui.GetCursorPosX(), ImGui.GetWindowContentRegionMax().X - okWidth - cancelWidth - ImGui.GetStyle().ItemSpacing.X));
+        using (ImRaii.Disabled(!okEnabled))
+        {
+            if (this.DrawPhonePillButton("Import and Apply", new Vector2(okWidth, this.Scale(32f))) && okEnabled && this.selectedLocalImagePath is not null)
+            {
+                this.ApplySelectedLocalImage(this.selectedLocalImagePath);
+                ImGui.CloseCurrentPopup();
+                return;
+            }
+        }
+
+        ImGui.SameLine();
+        if (this.DrawPhonePillButton("Cancel", new Vector2(cancelWidth, this.Scale(32f))))
+        {
+            ImGui.CloseCurrentPopup();
+        }
+    }
+
+    private void DrawLocalImagePickerPreview()
+    {
+        ImGui.TextDisabled("Preview");
+        ImGui.Separator();
+
+        if (string.IsNullOrWhiteSpace(this.selectedLocalImagePath) || !File.Exists(this.selectedLocalImagePath))
+        {
+            ImGui.TextWrapped("Select an image to preview it before applying.");
+            return;
+        }
+
+        var texture = this.appIconRenderer.TryGetTexture(this.selectedLocalImagePath);
+        if (texture is null)
+        {
+            ImGui.TextWrapped("Loading preview...");
+            return;
+        }
+
+        var available = ImGui.GetContentRegionAvail();
+        var previewSize = Math.Min(available.X, Math.Max(this.Scale(120f), available.Y - this.Scale(58f)));
+        var imageSize = new Vector2(previewSize, previewSize);
+        var cursor = ImGui.GetCursorScreenPos();
+        var drawList = ImGui.GetWindowDrawList();
+        drawList.AddRectFilled(cursor, cursor + imageSize, ImGui.GetColorU32(new Vector4(0.07f, 0.08f, 0.11f, 0.62f)), 0f);
+        drawList.AddImage(texture.Handle, cursor, cursor + imageSize, Vector2.Zero, Vector2.One, ImGui.GetColorU32(Vector4.One));
+        ImGui.Dummy(imageSize);
+
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + this.Scale(6f));
+        ImGui.TextWrapped(Path.GetFileName(this.selectedLocalImagePath));
+    }
+
+    private void DrawLocalImagePickerToolbar()
+    {
+        var parent = Directory.GetParent(this.localImagePickerDirectory);
+        using (ImRaii.Disabled(parent is null))
+        {
+            if (this.DrawPhonePillButton("Up", new Vector2(this.Scale(42f), this.Scale(24f))) && parent is not null)
+            {
+                this.SetLocalImagePickerDirectory(parent.FullName);
+            }
+        }
+
+        ImGui.SameLine();
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (Directory.Exists(home) && this.DrawPhonePillButton("Home", new Vector2(this.Scale(58f), this.Scale(24f))))
+        {
+            this.SetLocalImagePickerDirectory(home);
+        }
+
+        ImGui.SameLine();
+        this.DrawLocalImagePickerBreadcrumbs();
+
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + this.Scale(3f));
+        ImGui.TextDisabled("Search:");
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(-1f);
+        ImGui.InputText("##local-image-picker-search", ref this.localImagePickerSearch, 120);
+    }
+
+    private void DrawLocalImagePickerBreadcrumbs()
+    {
+        var root = Path.GetPathRoot(this.localImagePickerDirectory);
+        if (!string.IsNullOrWhiteSpace(root))
+        {
+            if (this.DrawPhonePillButton(root.TrimEnd(Path.DirectorySeparatorChar), new Vector2(this.Scale(46f), this.Scale(24f))))
+            {
+                this.SetLocalImagePickerDirectory(root);
+            }
+        }
+
+        var relative = !string.IsNullOrWhiteSpace(root)
+            ? this.localImagePickerDirectory[root.Length..]
+            : this.localImagePickerDirectory;
+        var current = root ?? string.Empty;
+        foreach (var part in relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, part);
+            ImGui.SameLine();
+            var width = Math.Clamp(ImGui.CalcTextSize(part).X + this.Scale(18f), this.Scale(46f), this.Scale(96f));
+            if (this.DrawPhonePillButton($"{part}##crumb-{current}", new Vector2(width, this.Scale(24f))))
+            {
+                this.SetLocalImagePickerDirectory(current);
+            }
+        }
+    }
+
+    private void DrawLocalImagePickerSidebar()
+    {
+        foreach (var shortcut in this.GetLocalImagePickerShortcuts())
+        {
+            if (Directory.Exists(shortcut.Path)
+                && this.DrawPhonePillButton($"{shortcut.Label}##shortcut-{shortcut.Path}", new Vector2(-1f, this.Scale(24f))))
+            {
+                this.SetLocalImagePickerDirectory(shortcut.Path);
+            }
+        }
+    }
+
+    private IReadOnlyList<(string Label, string Path)> GetLocalImagePickerShortcuts()
+    {
+        var shortcuts = new List<(string Label, string Path)>
+        {
+            ("Home", Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)),
+            ("Desktop", Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory)),
+            ("Documents", Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)),
+            ("Pictures", Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)),
+            ("Videos", Environment.GetFolderPath(Environment.SpecialFolder.MyVideos)),
+        };
+
+        var downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+        shortcuts.Insert(3, ("Downloads", downloads));
+
+        foreach (var drive in DriveInfo.GetDrives().Where(item => item.IsReady).OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            shortcuts.Add((drive.Name.TrimEnd(Path.DirectorySeparatorChar), drive.RootDirectory.FullName));
+        }
+
+        return shortcuts;
+    }
+
+    private void DrawLocalImagePickerFileList()
+    {
+        var width = ImGui.GetContentRegionAvail().X;
+        var typeX = Math.Max(this.Scale(250f), width - this.Scale(250f));
+        var sizeX = Math.Max(typeX + this.Scale(62f), width - this.Scale(158f));
+        var dateX = Math.Max(sizeX + this.Scale(54f), width - this.Scale(92f));
+        ImGui.TextDisabled("File Name");
+        ImGui.SameLine(typeX);
+        ImGui.TextDisabled("Type");
+        ImGui.SameLine(sizeX);
+        ImGui.TextDisabled("Size");
+        ImGui.SameLine(dateX);
+        ImGui.TextDisabled("Date");
+        ImGui.Separator();
+
+        try
+        {
+            foreach (var directory in Directory.EnumerateDirectories(this.localImagePickerDirectory)
+                         .Where(this.MatchesLocalImagePickerSearch)
+                         .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+            {
+                var name = Path.GetFileName(directory);
+                if (this.DrawLocalImagePickerRow($"[Folder] {name}", "Folder", string.Empty, Directory.GetLastWriteTime(directory).ToString("yyyy/MM/dd HH:mm"), false, directory, typeX, sizeX, dateX))
+                {
+                    this.SetLocalImagePickerDirectory(directory);
+                }
+            }
+
+            foreach (var file in Directory.EnumerateFiles(this.localImagePickerDirectory)
+                         .Where(IsSupportedWallpaperFile)
+                         .Where(this.MatchesLocalImagePickerSearch)
+                         .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+            {
+                var info = new FileInfo(file);
+                var selected = string.Equals(this.selectedLocalImagePath, file, StringComparison.OrdinalIgnoreCase);
+                if (this.DrawLocalImagePickerRow(info.Name, Path.GetExtension(file).TrimStart('.').ToLowerInvariant(), this.FormatFileSize(info.Length), info.LastWriteTime.ToString("yyyy/MM/dd HH:mm"), selected, file, typeX, sizeX, dateX))
+                {
+                    this.selectedLocalImagePath = file;
+                    this.localImagePickerFileName = info.Name;
+                }
+
+                if (ImGui.IsItemHovered() && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
+                {
+                    this.ApplySelectedLocalImage(file);
+                    ImGui.CloseCurrentPopup();
+                    return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            this.pendingStatus = $"Could not browse folder: {this.SanitizeUserFacingError(ex.Message)}";
+        }
+    }
+
+    private bool DrawLocalImagePickerRow(string name, string type, string size, string date, bool selected, string id, float typeX, float sizeX, float dateX)
+    {
+        var rowHeight = this.Scale(24f);
+        var cursor = ImGui.GetCursorScreenPos();
+        var contentWidth = ImGui.GetContentRegionAvail().X;
+        var drawList = ImGui.GetWindowDrawList();
+        ImGui.InvisibleButton($"##picker-row-{id}", new Vector2(contentWidth, rowHeight));
+
+        var hovered = ImGui.IsItemHovered();
+        if (selected || hovered)
+        {
+            var color = selected
+                ? ImGui.GetColorU32(new Vector4(0.23f, 0.31f, 0.47f, 0.85f))
+                : ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.07f));
+            drawList.AddRectFilled(cursor, cursor + new Vector2(contentWidth, rowHeight), color, 0f);
+        }
+
+        var textY = cursor.Y + Math.Max(0f, (rowHeight - ImGui.GetTextLineHeight()) * 0.5f);
+        var textColor = ImGui.GetColorU32(new Vector4(0.94f, 0.96f, 1f, 1f));
+        var mutedColor = ImGui.GetColorU32(new Vector4(0.72f, 0.77f, 0.88f, 1f));
+        drawList.AddText(new Vector2(cursor.X + this.Scale(6f), textY), textColor, name);
+        drawList.AddText(new Vector2(cursor.X + typeX, textY), mutedColor, type);
+        drawList.AddText(new Vector2(cursor.X + sizeX, textY), mutedColor, size);
+        drawList.AddText(new Vector2(cursor.X + dateX, textY), mutedColor, date);
+
+        return ImGui.IsItemClicked(ImGuiMouseButton.Left);
+    }
+
+    private bool MatchesLocalImagePickerSearch(string path)
+    {
+        return string.IsNullOrWhiteSpace(this.localImagePickerSearch)
+            || Path.GetFileName(path).Contains(this.localImagePickerSearch, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void SetLocalImagePickerDirectory(string directory)
+    {
+        if (!Directory.Exists(directory))
+        {
+            return;
+        }
+
+        this.localImagePickerDirectory = directory;
+        this.selectedLocalImagePath = null;
+        this.localImagePickerFileName = string.Empty;
+    }
+
+    private string FormatFileSize(long bytes)
+    {
+        if (bytes >= 1024L * 1024L * 1024L)
+        {
+            return $"{bytes / (1024f * 1024f * 1024f):0.0} GB";
+        }
+
+        if (bytes >= 1024L * 1024L)
+        {
+            return $"{bytes / (1024f * 1024f):0.0} MB";
+        }
+
+        if (bytes >= 1024L)
+        {
+            return $"{bytes / 1024f:0.0} KB";
+        }
+
+        return $"{bytes} B";
+    }
+
+    private void ApplySelectedLocalImage(string path)
+    {
+        this.localImagePickerDirectory = Path.GetDirectoryName(path) ?? this.localImagePickerDirectory;
+        switch (this.localImagePickerTarget)
+        {
+            case LocalImagePickerTarget.Wallpaper:
+                this.TryImportBackgroundImage(path);
+                break;
+        }
+    }
+
     private void SaveConfiguration()
     {
         this.service.PluginInterface.SavePluginConfig(this.configuration);
     }
+
+    private void TryImportBackgroundImage(string sourcePath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(sourcePath))
+            {
+                this.pendingStatus = "Choose a PNG or JPG wallpaper first";
+                return;
+            }
+
+            var trimmed = sourcePath.Trim().Trim('"');
+            var extension = Path.GetExtension(trimmed);
+            if (!File.Exists(trimmed)
+                || (!extension.Equals(".png", StringComparison.OrdinalIgnoreCase)
+                    && !extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase)
+                    && !extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase)))
+            {
+                this.pendingStatus = "Wallpaper must be a PNG or JPG file";
+                return;
+            }
+
+            this.ImportBackgroundImage(trimmed);
+        }
+        catch (Exception ex)
+        {
+            this.pendingStatus = $"Wallpaper import failed: {this.SanitizeUserFacingError(ex.Message)}";
+        }
+    }
+
     private void ImportBackgroundImage(string sourcePath)
     {
-        var destinationPath = this.configuration.GetLocalWallpaperPath();
+        var destinationPath = this.configuration.GetLocalWallpaperImportPath(sourcePath);
         Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
 
         using var image = Image.Load<Rgba32>(sourcePath);
@@ -2397,13 +3586,7 @@ public sealed class PhoneWindow : Window
         }
 
         image.Save(destinationPath, new PngEncoder());
-        this.appIconRenderer.Invalidate(this.configuration.BackgroundImagePath);
-        this.configuration.BackgroundImagePath = destinationPath;
-        this.configuration.BackgroundZoom = 1f;
-        this.configuration.BackgroundOffsetX = 0f;
-        this.configuration.BackgroundOffsetY = 0f;
-        this.SaveConfiguration();
-        this.pendingStatus = "Wallpaper updated";
+        this.ApplyWallpaper(destinationPath);
     }
 
     private void ResetBackgroundImage()
@@ -2413,55 +3596,105 @@ public sealed class PhoneWindow : Window
         this.configuration.BackgroundZoom = 1f;
         this.configuration.BackgroundOffsetX = 0f;
         this.configuration.BackgroundOffsetY = 0f;
+        this.configuration.BackgroundMode = PhoneWallpaperMode.Fit;
         this.SaveConfiguration();
         this.pendingStatus = "Wallpaper reset";
     }
 
     private void DrawWallpaper(Vector2 screenMin, Vector2 screenMax, float rounding)
     {
+        var draw = ImGui.GetWindowDrawList();
         var texture = this.appIconRenderer.TryGetTexture(this.configuration.BackgroundImagePath);
-        if (texture is null)
-        {
-            return;
-        }
-
+        var drewWallpaperImage = false;
         var viewport = screenMax - screenMin;
-        if (viewport.X <= 0f || viewport.Y <= 0f)
+        if (texture is not null && viewport.X > 0f && viewport.Y > 0f)
         {
-            return;
+            var textureSize = new Vector2(texture.Width, texture.Height);
+            if (textureSize.X > 0f && textureSize.Y > 0f)
+            {
+                var uvWidth = 1f;
+                var uvHeight = 1f;
+                if (this.configuration.BackgroundMode != PhoneWallpaperMode.Stretch)
+                {
+                    var viewportAspect = viewport.X / viewport.Y;
+                    var textureAspect = textureSize.X / textureSize.Y;
+                    if (textureAspect > viewportAspect)
+                    {
+                        uvWidth = viewportAspect / textureAspect;
+                    }
+                    else
+                    {
+                        uvHeight = textureAspect / viewportAspect;
+                    }
+                }
+
+                var zoom = this.configuration.BackgroundMode == PhoneWallpaperMode.Custom
+                    ? Math.Clamp(this.configuration.BackgroundZoom, 1f, 2.75f)
+                    : 1f;
+                uvWidth = Math.Clamp(uvWidth / zoom, 0.05f, 1f);
+                uvHeight = Math.Clamp(uvHeight / zoom, 0.05f, 1f);
+                var maxOffsetX = (1f - uvWidth) * 0.5f;
+                var maxOffsetY = (1f - uvHeight) * 0.5f;
+                var offsetX = this.configuration.BackgroundMode == PhoneWallpaperMode.Custom ? this.configuration.BackgroundOffsetX : 0f;
+                var offsetY = this.configuration.BackgroundMode == PhoneWallpaperMode.Custom ? this.configuration.BackgroundOffsetY : 0f;
+                var centerX = 0.5f + Math.Clamp(offsetX, -1f, 1f) * maxOffsetX;
+                var centerY = 0.5f + Math.Clamp(offsetY, -1f, 1f) * maxOffsetY;
+                var uv0 = new Vector2(centerX - uvWidth * 0.5f, centerY - uvHeight * 0.5f);
+                var uv1 = new Vector2(centerX + uvWidth * 0.5f, centerY + uvHeight * 0.5f);
+
+                draw.AddImageRounded(texture.Handle, screenMin, screenMax, uv0, uv1, ImGui.GetColorU32(Vector4.One), rounding);
+                drewWallpaperImage = true;
+            }
         }
 
-        var textureSize = new Vector2(texture.Width, texture.Height);
-        if (textureSize.X <= 0f || textureSize.Y <= 0f)
+        if (!drewWallpaperImage && this.configuration.UseSolidBackgroundColor)
         {
-            return;
+            var solid = this.ParseHexColor(this.configuration.SolidBackgroundColorHex, new Vector4(0.105f, 0.133f, 0.2f, 1f));
+            solid.W = Math.Clamp(this.configuration.SolidBackgroundAlpha, 0f, 1f);
+            draw.AddRectFilled(screenMin, screenMax, ImGui.GetColorU32(solid), rounding);
         }
-
-        var viewportAspect = viewport.X / viewport.Y;
-        var textureAspect = textureSize.X / textureSize.Y;
-        var uvWidth = 1f;
-        var uvHeight = 1f;
-        if (textureAspect > viewportAspect)
-        {
-            uvWidth = viewportAspect / textureAspect;
-        }
-        else
-        {
-            uvHeight = textureAspect / viewportAspect;
-        }
-
-        var zoom = Math.Clamp(this.configuration.BackgroundZoom, 1f, 2.75f);
-        uvWidth = Math.Clamp(uvWidth / zoom, 0.05f, 1f);
-        uvHeight = Math.Clamp(uvHeight / zoom, 0.05f, 1f);
-        var maxOffsetX = (1f - uvWidth) * 0.5f;
-        var maxOffsetY = (1f - uvHeight) * 0.5f;
-        var centerX = 0.5f + Math.Clamp(this.configuration.BackgroundOffsetX, -1f, 1f) * maxOffsetX;
-        var centerY = 0.5f + Math.Clamp(this.configuration.BackgroundOffsetY, -1f, 1f) * maxOffsetY;
-        var uv0 = new Vector2(centerX - uvWidth * 0.5f, centerY - uvHeight * 0.5f);
-        var uv1 = new Vector2(centerX + uvWidth * 0.5f, centerY + uvHeight * 0.5f);
-
-        ImGui.GetWindowDrawList().AddImageRounded(texture.Handle, screenMin, screenMax, uv0, uv1, ImGui.GetColorU32(Vector4.One), rounding);
     }
+
+    private void DrawIconTintOverlay(ImDrawListPtr draw, Vector2 min, Vector2 max, float rounding)
+    {
+        if (!this.configuration.UseIconTint || this.configuration.IconTintAlpha <= 0f)
+        {
+            return;
+        }
+
+        var tint = this.ParseHexColor(this.configuration.IconTintColorHex, new Vector4(0.85f, 0.71f, 0.43f, 1f));
+        tint.W = Math.Clamp(this.configuration.IconTintAlpha, 0f, 0.85f);
+        draw.AddRectFilled(min, max, ImGui.GetColorU32(tint), rounding);
+    }
+
+    private Vector4 ParseHexColor(string? value, Vector4 fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return fallback;
+        }
+
+        var hex = value.Trim().TrimStart('#');
+        if (hex.Length != 6 || !int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out var rgb))
+        {
+            return fallback;
+        }
+
+        return new Vector4(
+            ((rgb >> 16) & 0xFF) / 255f,
+            ((rgb >> 8) & 0xFF) / 255f,
+            (rgb & 0xFF) / 255f,
+            1f);
+    }
+
+    private static string ToHexColor(float red, float green, float blue)
+    {
+        var r = (byte)Math.Clamp(MathF.Round(red), 0f, 255f);
+        var g = (byte)Math.Clamp(MathF.Round(green), 0f, 255f);
+        var b = (byte)Math.Clamp(MathF.Round(blue), 0f, 255f);
+        return $"#{r:X2}{g:X2}{b:X2}";
+    }
+
     private void RefreshStaffDashboard()
     {
         if (string.IsNullOrWhiteSpace(this.configuration.AuthToken))
@@ -3264,7 +4497,7 @@ public sealed class PhoneWindow : Window
         }
     }
 
-    private void DrawEditableText(string label, string value, Action<string> setter, int maxLength)
+    private bool DrawEditableText(string label, string value, Action<string> setter, int maxLength)
     {
         ImGui.TextDisabled(label);
         var buffer = value;
@@ -3272,6 +4505,13 @@ public sealed class PhoneWindow : Window
         {
             setter(buffer);
         }
+
+        if (ImGui.IsItemDeactivatedAfterEdit())
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private bool DrawPhonePillButton(string label, Vector2 size)
@@ -3296,6 +4536,20 @@ public sealed class PhoneWindow : Window
         drawList.AddText(textPosition, ImGui.GetColorU32(ImGuiCol.Text), visibleLabel);
         drawList.PopClipRect();
         return clicked;
+    }
+
+    private void DrawOutlinedText(ImDrawListPtr drawList, ImFontPtr font, float fontSize, Vector2 position, string text)
+    {
+        var outlineColor = ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.86f));
+        var textColor = ImGui.GetColorU32(Vector4.One);
+        var offset = Math.Max(1f, this.Scale(1f));
+        drawList.AddText(font, fontSize, position + new Vector2(-offset, 0f), outlineColor, text);
+        drawList.AddText(font, fontSize, position + new Vector2(offset, 0f), outlineColor, text);
+        drawList.AddText(font, fontSize, position + new Vector2(0f, -offset), outlineColor, text);
+        drawList.AddText(font, fontSize, position + new Vector2(0f, offset), outlineColor, text);
+        drawList.AddText(font, fontSize, position + new Vector2(-offset, -offset), outlineColor, text);
+        drawList.AddText(font, fontSize, position + new Vector2(offset, offset), outlineColor, text);
+        drawList.AddText(font, fontSize, position, textColor, text);
     }
 
     private static string GetVisibleButtonLabel(string label)
@@ -3923,9 +5177,11 @@ public sealed class PhoneWindow : Window
     private void DrawHomeButton()
     {
         var available = ImGui.GetContentRegionAvail();
-        var hitSize = new Vector2(this.Scale(176f), this.Scale(28f));
-        var visualSize = new Vector2(this.Scale(132f), this.Scale(9f));
-        var cursor = new Vector2(Math.Max(0f, (available.X - hitSize.X) * 0.5f), Math.Max(0f, (available.Y - hitSize.Y) * 0.5f));
+        var hitSize = new Vector2(this.Scale(236f), this.Scale(24f));
+        var visualSize = new Vector2(this.Scale(208f), this.Scale(14f));
+        var cursor = new Vector2(
+            Math.Max(0f, (available.X - hitSize.X) * 0.5f),
+            Math.Max(0f, (available.Y - hitSize.Y) * 0.5f));
         ImGui.SetCursorPos(cursor);
         using var buttonStyle = ImRaii.PushStyle(ImGuiStyleVar.FrameRounding, hitSize.Y * 0.5f);
         using var buttonColor = ImRaii.PushColor(ImGuiCol.Button, new Vector4(1f, 1f, 1f, 0.01f));
@@ -3955,7 +5211,8 @@ public sealed class PhoneWindow : Window
 
         var visualPos = new Vector2(hitPos.X + (hitSize.X - visualSize.X) * 0.5f, hitPos.Y + (hitSize.Y - visualSize.Y) * 0.5f);
         var draw = ImGui.GetWindowDrawList();
-        draw.AddRectFilled(visualPos + new Vector2(0f, this.Scale(2f)), visualPos + visualSize + new Vector2(0f, this.Scale(2f)), ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.2f)), 999f);
+        draw.AddRectFilled(visualPos + new Vector2(0f, this.Scale(2f)), visualPos + visualSize + new Vector2(0f, this.Scale(2f)), ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.7f)), 999f);
+        draw.AddRect(visualPos + new Vector2(-this.Scale(1f), -this.Scale(1f)), visualPos + visualSize + new Vector2(this.Scale(1f), this.Scale(1f)), ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.9f)), 999f, ImDrawFlags.None, this.Scale(1f));
         draw.AddRectFilled(visualPos, visualPos + visualSize, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.78f)), 999f);
     }
 
@@ -4041,7 +5298,10 @@ public sealed class PhoneWindow : Window
     {
         var center = ImGui.GetMainViewport().GetCenter();
         ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
-        ImGui.SetNextWindowSize(this.Scale(320f, 286f), ImGuiCond.Appearing);
+        var height = this.state.ActiveCall is { IsIncoming: true }
+            ? this.Scale(300f)
+            : this.Scale(250f);
+        ImGui.SetNextWindowSize(new Vector2(this.Scale(320f), height), ImGuiCond.Appearing);
     }
 
     private void DrawCallWindowContent()
@@ -4062,20 +5322,20 @@ public sealed class PhoneWindow : Window
             ImGui.TextDisabled(call.VoiceSession.QualityLabel);
         }
 
-        using (var participantList = ImRaii.Child("call-popup-participants", new Vector2(-1f, this.Scale(148f)), true))
-        {
-            if (participantList.Success)
-            {
-                ImGui.TextDisabled("Participants");
-                foreach (var participant in call.Participants)
-                {
-                    ImGui.BulletText(participant);
-                }
-            }
-        }
-
         if (call.IsIncoming)
         {
+            using (var participantList = ImRaii.Child("call-popup-participants", new Vector2(-1f, this.Scale(148f)), true))
+            {
+                if (participantList.Success)
+                {
+                    ImGui.TextDisabled("Participants");
+                    foreach (var participant in call.Participants)
+                    {
+                        ImGui.BulletText(participant);
+                    }
+                }
+            }
+
             var actionWidth = (ImGui.GetContentRegionAvail().X - this.Scale(10f)) * 0.5f;
             if (ImGui.Button("Accept", new Vector2(actionWidth, this.Scale(34f))))
             {
@@ -4092,6 +5352,23 @@ public sealed class PhoneWindow : Window
         }
         else
         {
+            if (ImGui.CollapsingHeader($"Participants ({call.Participants.Count})", ImGuiTreeNodeFlags.DefaultOpen))
+            {
+                using var participantList = ImRaii.Child("call-popup-participants-active", new Vector2(-1f, this.Scale(96f)), true);
+                if (participantList.Success)
+                {
+                    foreach (var participant in call.Participants.OrderBy(item => item, StringComparer.OrdinalIgnoreCase))
+                    {
+                        ImGui.BulletText(participant);
+                    }
+
+                    if (call.IsGroup)
+                    {
+                        ImGui.TextDisabled("Disconnect controls need participant IDs and owner permissions from the server before they can be enabled.");
+                    }
+                }
+            }
+
             var actionWidth = (ImGui.GetContentRegionAvail().X - this.Scale(10f)) * 0.5f;
             var muteLabel = call.IsMuted ? "Unmute" : "Mute";
             if (ImGui.Button(muteLabel, new Vector2(actionWidth, this.Scale(34f))))
@@ -4148,6 +5425,7 @@ public sealed class PhoneWindow : Window
                 if (ImGui.Selectable(value.ToString(), selected))
                 {
                     this.configuration.NotificationAnchor = value;
+                    this.SaveConfiguration();
                 }
 
                 if (selected)
@@ -4243,6 +5521,7 @@ public sealed class PhoneWindow : Window
         this.pendingStatus = this.state.ActiveCall is null
             ? $"{label} set to {selectedDevice}"
             : $"{label} set to {selectedDevice}. Applies next call.";
+        this.SaveConfiguration();
     }
 
     private bool IsWindowsDefaultVoiceDeviceSelected(string? preferredKey, string? preferredName)
@@ -4328,20 +5607,51 @@ public sealed class PhoneWindow : Window
         drawList.AddRectFilled(windowPos, windowPos + windowSize, shellColor, this.Scale(42f));
         drawList.AddRect(windowPos, windowPos + windowSize, trimColor, this.Scale(42f), ImDrawFlags.None, 1.4f);
         var screenRounding = this.Scale(36f);
-        this.DrawWallpaper(screenMin, screenMax, screenRounding);
-        drawList.AddRectFilledMultiColor(
-            screenMin,
-            screenMax,
-            ImGui.GetColorU32(new Vector4(0.14f, 0.16f, 0.34f, 0.44f)),
-            ImGui.GetColorU32(new Vector4(0.19f, 0.14f, 0.36f, 0.4f)),
-            ImGui.GetColorU32(new Vector4(0.03f, 0.08f, 0.18f, 0.52f)),
-            ImGui.GetColorU32(new Vector4(0.04f, 0.11f, 0.18f, 0.48f)));
+        var hasCustomScreenBackground = this.ShouldShowCustomScreenBackground();
+        if (hasCustomScreenBackground)
+        {
+            this.DrawWallpaper(screenMin, screenMax, screenRounding);
+        }
+
+        if (!hasCustomScreenBackground)
+        {
+            drawList.AddRectFilledMultiColor(
+                screenMin,
+                screenMax,
+                ImGui.GetColorU32(new Vector4(0.14f, 0.16f, 0.34f, 0.44f)),
+                ImGui.GetColorU32(new Vector4(0.19f, 0.14f, 0.36f, 0.4f)),
+                ImGui.GetColorU32(new Vector4(0.03f, 0.08f, 0.18f, 0.52f)),
+                ImGui.GetColorU32(new Vector4(0.04f, 0.11f, 0.18f, 0.48f)));
+        }
         drawList.AddRect(screenMin, screenMax, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.05f)), screenRounding, ImDrawFlags.None, 1f);
-        drawList.AddCircleFilled(windowPos + new Vector2(windowSize.X * 0.76f, windowSize.Y * 0.2f), windowSize.X * 0.45f, ImGui.GetColorU32(new Vector4(0.98f, 0.72f, 0.42f, 0.08f)), 80);
-        drawList.AddCircleFilled(windowPos + new Vector2(windowSize.X * 0.18f, windowSize.Y * 0.58f), windowSize.X * 0.34f, ImGui.GetColorU32(new Vector4(0.27f, 0.82f, 0.96f, 0.06f)), 80);
-        drawList.AddRectFilled(screenMin + new Vector2(0f, this.Scale(12f)), screenMax - new Vector2(0f, windowSize.Y * 0.68f), ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.015f)), this.Scale(28f));
+        if (!hasCustomScreenBackground)
+        {
+            drawList.AddCircleFilled(windowPos + new Vector2(windowSize.X * 0.76f, windowSize.Y * 0.2f), windowSize.X * 0.45f, ImGui.GetColorU32(new Vector4(0.98f, 0.72f, 0.42f, 0.08f)), 80);
+            drawList.AddCircleFilled(windowPos + new Vector2(windowSize.X * 0.18f, windowSize.Y * 0.58f), windowSize.X * 0.34f, ImGui.GetColorU32(new Vector4(0.27f, 0.82f, 0.96f, 0.06f)), 80);
+            drawList.AddRectFilled(screenMin + new Vector2(0f, this.Scale(12f)), screenMax - new Vector2(0f, windowSize.Y * 0.68f), ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.015f)), this.Scale(28f));
+        }
 
 
+    }
+
+    private bool HasCustomScreenBackground()
+    {
+        return !string.IsNullOrWhiteSpace(this.configuration.BackgroundImagePath)
+            || this.configuration.UseSolidBackgroundColor;
+    }
+
+    private bool ShouldShowCustomScreenBackground()
+    {
+        return this.HasCustomScreenBackground()
+            && this.startupSplashCompleted
+            && (this.showHomeScreen || this.activeTab == PhoneTab.Wallpapers);
+    }
+
+    private IDisposable? PushTransparentScreenChildBackgroundIfNeeded()
+    {
+        return this.ShouldShowCustomScreenBackground()
+            ? ImRaii.PushColor(ImGuiCol.ChildBg, Vector4.Zero)
+            : null;
     }
 
     private void DrawTopNotchOverlay()
