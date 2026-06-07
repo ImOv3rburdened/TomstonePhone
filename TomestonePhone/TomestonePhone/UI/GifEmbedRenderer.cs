@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Numerics;
+using System.Web;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.Textures;
 using Dalamud.Interface.Textures.TextureWraps;
 using Dalamud.Plugin.Services;
 using SixLabors.ImageSharp;
@@ -32,6 +34,7 @@ public sealed class GifEmbedRenderer : IDisposable
 
     public void Draw(string url, float maxWidth, bool animate)
     {
+        url = url.Replace("&amp;", "&");
         var state = this.cache.GetOrAdd(url, static _ => new GifAnimationState());
         state.EnsureLoadStarted(() => this.LoadAsync(url, state));
 
@@ -54,6 +57,10 @@ public sealed class GifEmbedRenderer : IDisposable
                 return;
             case GifLoadStatus.Failed:
                 ImGui.TextDisabled("GIF unavailable");
+                if (!string.IsNullOrWhiteSpace(state.Error))
+                {
+                    ImGui.TextWrapped(state.Error);
+                }
                 return;
             case GifLoadStatus.Ready when state.Frames.Count > 0:
                 var frame = state.GetCurrentFrame(animate);
@@ -80,25 +87,51 @@ public sealed class GifEmbedRenderer : IDisposable
     {
         try
         {
-            using var stream = await HttpClient.GetStreamAsync(url).ConfigureAwait(false);
+            url = System.Net.WebUtility.HtmlDecode(url);
+            url = url.Replace(".com//media", ".com/media");
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.UserAgent.ParseAdd(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            );
+            request.Headers.Referrer = new Uri("https://giphy.com/");
+
+            using var response = await HttpClient.SendAsync(request).ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                state.SetFailed($"HTTP {(int)response.StatusCode}: {response.ReasonPhrase}\nURL: {url}");
+                return;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+
             using var image = await Image.LoadAsync<Rgba32>(stream).ConfigureAwait(false);
             var frames = new List<GifFrameData>(image.Frames.Count);
 
             for (var index = 0; index < image.Frames.Count; index++)
             {
                 using var frameImage = image.Frames.CloneFrame(index);
-                using var output = new MemoryStream();
-                await frameImage.SaveAsPngAsync(output).ConfigureAwait(false);
-                var metadata = frameImage.Frames.RootFrame.Metadata.GetGifMetadata();
+
+                var pixels = new byte[frameImage.Width * frameImage.Height * 4];
+                frameImage.CopyPixelDataTo(pixels);
+
+                var metadata = image.Frames[index].Metadata.GetGifMetadata();
                 var delay = Math.Max(0.06f, metadata.FrameDelay / 100f);
-                frames.Add(new GifFrameData(output.ToArray(), delay));
+
+                frames.Add(new GifFrameData(
+                    pixels,
+                    frameImage.Width,
+                    frameImage.Height,
+                    delay
+                ));
             }
 
             state.SetDecodedFrames(frames);
         }
-        catch
+        catch (Exception ex)
         {
-            state.SetFailed();
+            state.SetFailed("LoadAsync: " + ex.Message);
         }
     }
 
@@ -129,6 +162,8 @@ public sealed class GifEmbedRenderer : IDisposable
         private List<GifFrameData>? decodedFrames;
 
         public GifLoadStatus Status { get; private set; } = GifLoadStatus.Loading;
+
+        public string? Error { get; private set; }
 
         public List<GifFrameTexture> Frames { get; } = [];
 
@@ -179,18 +214,29 @@ public sealed class GifEmbedRenderer : IDisposable
             {
                 foreach (var frame in this.decodedFrames)
                 {
-                    var wrap = textureProvider.CreateFromImageAsync(frame.PngBytes).GetAwaiter().GetResult();
-                    this.Frames.Add(new GifFrameTexture(wrap, frame.DelaySeconds));
-                }
+                    var wrap = textureProvider.CreateFromRaw(
+                        RawImageSpecification.Rgba32(frame.Width, frame.Height),
+                        frame.RgbaBytes
+                    );
 
-                this.decodedFrames = null;
-                this.currentFrameIndex = 0;
-                this.nextFrameUtc = DateTime.UtcNow.AddSeconds(this.Frames[0].DelaySeconds);
-                this.Status = GifLoadStatus.Ready;
+                    this.Frames.Add(new GifFrameTexture(wrap, frame.DelaySeconds));
             }
-            catch
+
+            this.decodedFrames = null;
+
+            if (this.Frames.Count <= 0)
             {
                 this.SetFailed();
+                return;
+            }
+
+            this.currentFrameIndex = 0;
+            this.nextFrameUtc = DateTime.UtcNow.AddSeconds(this.Frames[0].DelaySeconds);
+            this.Status = GifLoadStatus.Ready;
+            }
+            catch (Exception ex)
+            {
+                this.SetFailed("TryCreateTextures :" + ex.Message);
             }
         }
 
@@ -202,8 +248,9 @@ public sealed class GifEmbedRenderer : IDisposable
             this.Status = GifLoadStatus.Ready;
         }
 
-        public void SetFailed()
+        public void SetFailed(string? error = null)
         {
+            this.Error = error;
             this.Status = GifLoadStatus.Failed;
         }
 
@@ -219,7 +266,7 @@ public sealed class GifEmbedRenderer : IDisposable
         }
     }
 
-    private sealed record GifFrameData(byte[] PngBytes, float DelaySeconds);
+    private sealed record GifFrameData(byte[] RgbaBytes, int Width, int Height, float DelaySeconds);
 
     private sealed class GifFrameTexture : IDisposable
     {
