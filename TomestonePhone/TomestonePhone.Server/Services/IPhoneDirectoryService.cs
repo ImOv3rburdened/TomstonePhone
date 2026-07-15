@@ -8,6 +8,8 @@ public interface IPhoneDirectoryService
 
     Task<IReadOnlyList<ContactRecord>> GetBlockedContactsAsync(Guid accountId, CancellationToken cancellationToken = default);
 
+    Task<IReadOnlyList<DirectoryPersonRecord>> SearchPeopleAsync(Guid accountId, string query, CancellationToken cancellationToken = default);
+
     Task<ContactRecord> UpsertContactAsync(Guid ownerAccountId, ContactNoteUpdateRequest request, CancellationToken cancellationToken = default);
 
     Task<bool> RemoveContactAsync(Guid ownerAccountId, Guid contactAccountId, CancellationToken cancellationToken = default);

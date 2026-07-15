@@ -18,7 +18,11 @@ public sealed class PhoneDirectoryService : IPhoneDirectoryService
         {
             var owner = state.Accounts.Single(item => item.Id == accountId);
             return state.Accounts
-                .Where(item => item.Id != accountId && owner.ContactPreferences.ContainsKey(item.Id))
+                .Where(item => item.Id != accountId
+                    && owner.ContactPreferences.ContainsKey(item.Id)
+                    && !owner.BlockedAccountIds.Contains(item.Id)
+                    && !item.BlockedAccountIds.Contains(accountId)
+                    && !AccountLabelFormatter.IsUnavailable(item))
                 .Select(item =>
                 {
                     var preference = owner.ContactPreferences[item.Id];
@@ -41,6 +45,33 @@ public sealed class PhoneDirectoryService : IPhoneDirectoryService
                 .Where(item => owner.BlockedAccountIds.Contains(item.Id))
                 .Select(item => new ContactRecord(item.Id, AccountLabelFormatter.GetDisplayName(item), item.PhoneNumber, "Blocked"))
                 .OrderBy(item => item.DisplayName)
+                .ToList();
+        }, cancellationToken);
+    }
+
+    public Task<IReadOnlyList<DirectoryPersonRecord>> SearchPeopleAsync(Guid accountId, string query, CancellationToken cancellationToken = default)
+    {
+        var normalized = query.Trim();
+        if (normalized.Length < 2)
+        {
+            return Task.FromResult<IReadOnlyList<DirectoryPersonRecord>>([]);
+        }
+
+        return this.repository.ReadAsync<IReadOnlyList<DirectoryPersonRecord>>(state =>
+        {
+            var owner = state.Accounts.Single(item => item.Id == accountId);
+            return state.Accounts
+                .Where(item => item.Id != accountId
+                    && !owner.BlockedAccountIds.Contains(item.Id)
+                    && !item.BlockedAccountIds.Contains(accountId)
+                    && !AccountLabelFormatter.IsUnavailable(item)
+                    && (item.Username.Contains(normalized, StringComparison.OrdinalIgnoreCase)
+                        || item.DisplayName.Contains(normalized, StringComparison.OrdinalIgnoreCase)
+                        || item.PhoneNumber.Contains(normalized, StringComparison.OrdinalIgnoreCase)))
+                .OrderBy(item => AccountLabelFormatter.GetDisplayName(item), StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.PhoneNumber, StringComparer.OrdinalIgnoreCase)
+                .Take(20)
+                .Select(item => new DirectoryPersonRecord(item.Id, item.Username, AccountLabelFormatter.GetDisplayName(item), item.PhoneNumber))
                 .ToList();
         }, cancellationToken);
     }
@@ -75,7 +106,19 @@ public sealed class PhoneDirectoryService : IPhoneDirectoryService
         return this.repository.WriteAsync(state =>
         {
             var owner = state.Accounts.Single(item => item.Id == ownerAccountId);
+            var target = state.Accounts.SingleOrDefault(item => item.Id == request.TargetAccountId);
+            if (target is null || target.Id == ownerAccountId || AccountLabelFormatter.IsUnavailable(target))
+            {
+                throw new InvalidOperationException("That account cannot be blocked.");
+            }
+
             owner.BlockedAccountIds.Add(request.TargetAccountId);
+            state.Friendships.RemoveAll(item =>
+                (item.AccountAId == ownerAccountId && item.AccountBId == request.TargetAccountId)
+                || (item.AccountAId == request.TargetAccountId && item.AccountBId == ownerAccountId));
+            state.FriendRequests.RemoveAll(item =>
+                (item.SenderAccountId == ownerAccountId && item.RecipientAccountId == request.TargetAccountId)
+                || (item.SenderAccountId == request.TargetAccountId && item.RecipientAccountId == ownerAccountId));
             return true;
         }, cancellationToken);
     }
@@ -89,4 +132,3 @@ public sealed class PhoneDirectoryService : IPhoneDirectoryService
         }, cancellationToken);
     }
 }
-

@@ -25,6 +25,11 @@ public sealed class FriendService : IFriendService
                 throw new InvalidOperationException("You cannot send a friend request to yourself.");
             }
 
+            if (sender.BlockedAccountIds.Contains(target.Id) || target.BlockedAccountIds.Contains(senderAccountId))
+            {
+                throw new InvalidOperationException("A friend request cannot be sent to this account.");
+            }
+
             if (state.Friendships.Any(item => MatchesFriendship(item, senderAccountId, target.Id)))
             {
                 throw new InvalidOperationException("You are already friends.");
@@ -70,11 +75,12 @@ public sealed class FriendService : IFriendService
 
     public Task<IReadOnlyList<FriendRequestRecord>> GetRequestsAsync(Guid accountId, CancellationToken cancellationToken = default)
     {
-        return this.repository.WriteAsync<IReadOnlyList<FriendRequestRecord>>(state =>
+        return this.repository.ReadAsync<IReadOnlyList<FriendRequestRecord>>(state =>
         {
-            RemoveExpiredRequests(state);
+            var cutoff = DateTimeOffset.UtcNow - RequestLifetime;
             return state.FriendRequests
                 .Where(item => string.Equals(item.Status, FriendRequestStatus.Pending.ToString(), StringComparison.OrdinalIgnoreCase))
+                .Where(item => item.CreatedAtUtc > cutoff)
                 .Where(item => item.RecipientAccountId == accountId || item.SenderAccountId == accountId)
                 .Select(item =>
                 {
@@ -98,6 +104,7 @@ public sealed class FriendService : IFriendService
     {
         return this.repository.WriteAsync<FriendRequestRecord?>(state =>
         {
+            RemoveExpiredRequests(state);
             var record = state.FriendRequests.SingleOrDefault(item =>
                 item.Id == request.RequestId
                 && item.RecipientAccountId == accountId
@@ -136,14 +143,6 @@ public sealed class FriendService : IFriendService
                 return false;
             }
 
-            var actor = state.Accounts.Single(item => item.Id == accountId);
-            var other = state.Accounts.SingleOrDefault(item => item.Id == request.FriendAccountId);
-            actor.ContactPreferences.Remove(request.FriendAccountId);
-            if (other is not null)
-            {
-                other.ContactPreferences.Remove(accountId);
-            }
-
             RemoveRequestsBetween(state, accountId, request.FriendAccountId);
 
             return true;
@@ -152,11 +151,11 @@ public sealed class FriendService : IFriendService
 
     private static void UpsertFriendContact(PersistedAccount owner, PersistedAccount friend)
     {
-        owner.ContactPreferences[friend.Id] = new PersistedContactPreference
+        owner.ContactPreferences.TryAdd(friend.Id, new PersistedContactPreference
         {
             DisplayName = AccountLabelFormatter.GetDisplayName(friend),
             Note = string.Empty,
-        };
+        });
     }
 
     private static void CreateFriendship(PersistedAppState state, PersistedAccount first, PersistedAccount second)

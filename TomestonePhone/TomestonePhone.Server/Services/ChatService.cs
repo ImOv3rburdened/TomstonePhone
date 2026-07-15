@@ -20,6 +20,17 @@ public sealed class ChatService : IChatService
         return this.repository.WriteAsync(state =>
         {
             SystemConversationCoordinator.EnsureStaffConversation(state);
+            if (!request.IsGroup)
+            {
+                throw new InvalidOperationException("Use the direct conversation endpoint for one-to-one messages.");
+            }
+
+            var conversationName = request.Name?.Trim() ?? string.Empty;
+            if (conversationName.Length is < 1 or > 80)
+            {
+                throw new InvalidOperationException("Group names must be between 1 and 80 characters.");
+            }
+
             var members = request.ParticipantIds
                 .Append(ownerAccountId)
                 .Distinct()
@@ -31,6 +42,27 @@ public sealed class ChatService : IChatService
                 })
                 .ToList();
 
+            if (members.Count < 2)
+            {
+                throw new InvalidOperationException("Add at least one other person to the group.");
+            }
+
+            var owner = state.Accounts.Single(item => item.Id == ownerAccountId);
+            var participants = members
+                .Where(member => member.AccountId != ownerAccountId)
+                .Select(member => state.Accounts.SingleOrDefault(account => account.Id == member.AccountId)
+                    ?? throw new InvalidOperationException("One or more selected people no longer exist."))
+                .ToList();
+            if (participants.Any(AccountLabelFormatter.IsUnavailable))
+            {
+                throw new InvalidOperationException("One or more selected people are unavailable.");
+            }
+
+            if (participants.Any(participant => owner.BlockedAccountIds.Contains(participant.Id) || participant.BlockedAccountIds.Contains(ownerAccountId)))
+            {
+                throw new InvalidOperationException("One or more selected people cannot be added to this group.");
+            }
+
             if (request.IsGroup)
             {
                 this.EnsureCanCreateOrGrowStandardGroup(state, ownerAccountId, members.Count);
@@ -39,7 +71,7 @@ public sealed class ChatService : IChatService
             var conversation = new PersistedConversation
             {
                 Id = Guid.NewGuid(),
-                Name = request.Name,
+                Name = conversationName,
                 IsGroup = request.IsGroup,
                 Kind = SystemConversationCoordinator.StandardConversationKind,
                 Members = members,
@@ -134,6 +166,8 @@ public sealed class ChatService : IChatService
                         throw new InvalidOperationException("Members cannot be added to this conversation.");
                     }
 
+                    EnsureGroupCandidateAvailable(state, actor, addId);
+
                     var existingMember = ConversationMembershipPolicy.FindMember(conversation, addId);
                     var activeMemberCount = ConversationMembershipPolicy.GetActiveMembers(conversation).Count();
                     if (existingMember is null)
@@ -177,8 +211,7 @@ public sealed class ChatService : IChatService
                         throw new InvalidOperationException("You are already in this group.");
                     }
 
-                    _ = state.Accounts.SingleOrDefault(item => item.Id == requestAddId)
-                        ?? throw new InvalidOperationException("That contact could not be found.");
+                    EnsureGroupCandidateAvailable(state, actor, requestAddId);
 
                     var requestedMember = ConversationMembershipPolicy.FindMember(conversation, requestAddId);
                     if (ConversationMembershipPolicy.IsActiveMember(requestedMember))
@@ -206,6 +239,7 @@ public sealed class ChatService : IChatService
 
                     var pendingApproval = conversation.PendingMemberRequests.SingleOrDefault(item => item.TargetAccountId == approveId)
                         ?? throw new InvalidOperationException("That request is no longer pending.");
+                    EnsureGroupCandidateAvailable(state, actor, approveId);
                     var existingApprovedMember = ConversationMembershipPolicy.FindMember(conversation, approveId);
                     var approvedActiveMemberCount = ConversationMembershipPolicy.GetActiveMembers(conversation).Count();
                     if (existingApprovedMember is null)
@@ -323,6 +357,12 @@ public sealed class ChatService : IChatService
                 {
                     throw new InvalidOperationException("The number you are trying to reach is no longer in service.");
                 }
+
+                var senderAccount = state.Accounts.Single(item => item.Id == senderAccountId);
+                if (senderAccount.BlockedAccountIds.Contains(otherAccountId) || otherAccount.BlockedAccountIds.Contains(senderAccountId))
+                {
+                    throw new InvalidOperationException("Message delivery is unavailable.");
+                }
             }
 
             var sender = state.Accounts.Single(item => item.Id == senderAccountId);
@@ -347,12 +387,14 @@ public sealed class ChatService : IChatService
                 RelatedCallId = null,
                 RelatedCallDurationSeconds = null,
                 Embeds = request.Embeds?
-                    .Where(item => Uri.TryCreate(item.Url, UriKind.Absolute, out _))
+                    .Select(item => TryNormalizeExternalEmbedUrl(item.Url))
+                    .Where(url => url is not null)
+                    .Take(4)
                     .Select(item => new PersistedExternalEmbed
                     {
                         Id = Guid.NewGuid(),
-                        Url = item.Url,
-                        Kind = DetectKind(item.Url).ToString(),
+                        Url = item!,
+                        Kind = DetectKind(item!).ToString(),
                     })
                     .ToList() ?? [],
             };
@@ -385,6 +427,12 @@ public sealed class ChatService : IChatService
             if (AccountLabelFormatter.IsUnavailable(target))
             {
                 throw new InvalidOperationException("The number you are trying to reach is no longer in service.");
+            }
+
+            var sender = state.Accounts.Single(item => item.Id == senderAccountId);
+            if (sender.BlockedAccountIds.Contains(target.Id) || target.BlockedAccountIds.Contains(senderAccountId))
+            {
+                throw new InvalidOperationException("That conversation is unavailable.");
             }
 
             var existing = state.Conversations.FirstOrDefault(item =>
@@ -561,7 +609,7 @@ public sealed class ChatService : IChatService
         return ParseMessageKind(message.Kind) switch
         {
             ChatMessageKind.CallStarted => "Call started",
-            ChatMessageKind.CallEnded => $"Call ended{(message.RelatedCallDurationSeconds is > 0 ? $" � {TimeSpan.FromSeconds(message.RelatedCallDurationSeconds.Value):m\\:ss}" : string.Empty)}",
+            ChatMessageKind.CallEnded => $"Call ended{(message.RelatedCallDurationSeconds is > 0 ? $" · {TimeSpan.FromSeconds(message.RelatedCallDurationSeconds.Value):m\\:ss}" : string.Empty)}",
             _ => message.Body,
         };
     }
@@ -580,6 +628,29 @@ public sealed class ChatService : IChatService
         }
 
         return ExternalEmbedKind.Unknown;
+    }
+
+    private static string? TryNormalizeExternalEmbedUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 2048
+            || !Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri)
+            || !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            || !string.IsNullOrEmpty(uri.UserInfo)
+            || IsLocalHostName(uri.Host)
+            || uri.HostNameType != UriHostNameType.Dns)
+        {
+            return null;
+        }
+
+        return uri.AbsoluteUri;
+    }
+
+    private static bool IsLocalHostName(string host)
+    {
+        var normalized = host.TrimEnd('.');
+        return string.Equals(normalized, "localhost", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith(".local", StringComparison.OrdinalIgnoreCase);
     }
 
     private static ConversationSummary MapSummary(PersistedAppState state, Guid accountId, PersistedConversation conversation)
@@ -614,6 +685,23 @@ public sealed class ChatService : IChatService
     private static GroupMemberRole ParseRole(string value)
     {
         return ConversationMembershipPolicy.ParseRole(value);
+    }
+
+    private static PersistedAccount EnsureGroupCandidateAvailable(PersistedAppState state, PersistedAccount actor, Guid targetAccountId)
+    {
+        var target = state.Accounts.SingleOrDefault(item => item.Id == targetAccountId)
+            ?? throw new InvalidOperationException("That contact could not be found.");
+        if (AccountLabelFormatter.IsUnavailable(target))
+        {
+            throw new InvalidOperationException("That contact is unavailable.");
+        }
+
+        if (actor.BlockedAccountIds.Contains(target.Id) || target.BlockedAccountIds.Contains(actor.Id))
+        {
+            throw new InvalidOperationException("That contact cannot be added to this group.");
+        }
+
+        return target;
     }
 
     private void EnsureCanCreateOrGrowStandardGroup(PersistedAppState state, Guid ownerAccountId, int targetMemberCount, PersistedConversation? conversation = null)
@@ -676,11 +764,6 @@ public sealed class ChatService : IChatService
         }
     }
 }
-
-
-
-
-
 
 
 

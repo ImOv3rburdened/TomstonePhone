@@ -11,6 +11,7 @@ namespace TomestonePhone.Voice;
 public sealed class VoiceChatSession : IDisposable
 {
     private readonly SemaphoreSlim sendLock = new(1, 1);
+    private readonly SemaphoreSlim lifecycleLock = new(1, 1);
     private readonly object syncRoot = new();
     private readonly ConcurrentDictionary<Guid, RemoteSpeakerState> remoteSpeakers = new();
     private readonly byte[] captureAccumulator = new byte[64 * 1024];
@@ -67,74 +68,82 @@ public sealed class VoiceChatSession : IDisposable
             throw new InvalidOperationException("This call does not have a voice session.");
         }
 
-        await this.StopAsync().ConfigureAwait(false);
-
-        var voiceSession = call.VoiceSession;
-        var sampleRate = Math.Max(8000, voiceSession.SampleRateHz);
-        const byte sampleBits = 16;
-        const byte channels = 1;
+        await this.lifecycleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            this.frameMilliseconds = Math.Clamp(voiceSession.FrameSizeMs <= 0 ? 20 : voiceSession.FrameSizeMs, 10, 60);
-            this.frameSamples = sampleRate * this.frameMilliseconds / 1000;
-            this.frameBytes = this.frameSamples * channels * (sampleBits / 8);
-            this.waveFormat = new WaveFormat(sampleRate, sampleBits, channels);
-            OpusCodecFactory.AttemptToUseNativeLibrary = false;
-            this.opusEncoder = OpusCodecFactory.CreateEncoder(sampleRate, channels, OpusApplication.OPUS_APPLICATION_VOIP);
-            this.opusEncoder.Bitrate = Math.Clamp(voiceSession.BitrateKbps <= 0 ? 24 : voiceSession.BitrateKbps, 12, 64) * 1000;
-            this.opusEncoder.Complexity = 5;
-            this.opusEncoder.SignalType = OpusSignal.OPUS_SIGNAL_VOICE;
-            this.opusDecoder = OpusCodecFactory.CreateDecoder(sampleRate, channels);
-            this.sessionId = call.SessionId;
-            this.currentAccountId = accountId;
-            this.isMuted = call.IsMuted;
-            this.reduceBackgroundNoise = reduceBackgroundNoise;
-            this.micVolume = ClampVolume(micVolume);
-            this.outputVolume = ClampVolume(outputVolume);
-            this.ResetNoiseReductionState(sampleRate);
+            await this.StopCoreAsync().ConfigureAwait(false);
 
-            this.mixer = new MixingSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels))
+            var voiceSession = call.VoiceSession;
+            var sampleRate = Math.Max(8000, voiceSession.SampleRateHz);
+            const byte sampleBits = 16;
+            const byte channels = 1;
+            try
             {
-                ReadFully = true,
-            };
-            this.playbackVolumeProvider = new VolumeSampleProvider(this.mixer)
+                this.frameMilliseconds = Math.Clamp(voiceSession.FrameSizeMs <= 0 ? 20 : voiceSession.FrameSizeMs, 10, 60);
+                this.frameSamples = sampleRate * this.frameMilliseconds / 1000;
+                this.frameBytes = this.frameSamples * channels * (sampleBits / 8);
+                this.waveFormat = new WaveFormat(sampleRate, sampleBits, channels);
+                OpusCodecFactory.AttemptToUseNativeLibrary = false;
+                this.opusEncoder = OpusCodecFactory.CreateEncoder(sampleRate, channels, OpusApplication.OPUS_APPLICATION_VOIP);
+                this.opusEncoder.Bitrate = Math.Clamp(voiceSession.BitrateKbps <= 0 ? 24 : voiceSession.BitrateKbps, 12, 64) * 1000;
+                this.opusEncoder.Complexity = 5;
+                this.opusEncoder.SignalType = OpusSignal.OPUS_SIGNAL_VOICE;
+                this.opusDecoder = OpusCodecFactory.CreateDecoder(sampleRate, channels);
+                this.sessionId = call.SessionId;
+                this.currentAccountId = accountId;
+                this.isMuted = call.IsMuted;
+                this.reduceBackgroundNoise = reduceBackgroundNoise;
+                this.micVolume = ClampVolume(micVolume);
+                this.outputVolume = ClampVolume(outputVolume);
+                this.ResetNoiseReductionState(sampleRate);
+
+                this.mixer = new MixingSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels))
+                {
+                    ReadFully = true,
+                };
+                this.playbackVolumeProvider = new VolumeSampleProvider(this.mixer)
+                {
+                    Volume = this.outputVolume,
+                };
+
+                this.waveOut = new WaveOutEvent
+                {
+                    DeviceNumber = outputDeviceNumber,
+                    DesiredLatency = this.frameMilliseconds * 2,
+                    NumberOfBuffers = 3,
+                };
+                this.waveOut.Init(this.playbackVolumeProvider.ToWaveProvider16());
+                this.waveOut.Play();
+
+                this.waveIn = new WaveInEvent
+                {
+                    DeviceNumber = inputDeviceNumber,
+                    BufferMilliseconds = this.frameMilliseconds,
+                    NumberOfBuffers = 3,
+                    WaveFormat = this.waveFormat,
+                };
+                this.waveIn.DataAvailable += this.OnCaptureDataAvailable;
+                this.waveIn.RecordingStopped += this.OnRecordingStopped;
+
+                this.webSocket = new ClientWebSocket();
+                this.webSocket.Options.SetRequestHeader("Authorization", $"Bearer {authToken}");
+                var uri = BuildVoiceWebSocketUri(serverBaseUrl, call.SessionId);
+                this.cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                await this.webSocket.ConnectAsync(uri, this.cancellationTokenSource.Token).ConfigureAwait(false);
+
+                this.receiveLoopTask = Task.Run(() => this.ReceiveLoopAsync(this.cancellationTokenSource.Token), this.cancellationTokenSource.Token);
+                this.waveIn.StartRecording();
+                this.IsConnected = true;
+            }
+            catch
             {
-                Volume = this.outputVolume,
-            };
-
-            this.waveOut = new WaveOutEvent
-            {
-                DeviceNumber = outputDeviceNumber,
-                DesiredLatency = this.frameMilliseconds * 2,
-                NumberOfBuffers = 3,
-            };
-            this.waveOut.Init(this.playbackVolumeProvider.ToWaveProvider16());
-            this.waveOut.Play();
-
-            this.waveIn = new WaveInEvent
-            {
-                DeviceNumber = inputDeviceNumber,
-                BufferMilliseconds = this.frameMilliseconds,
-                NumberOfBuffers = 3,
-                WaveFormat = this.waveFormat,
-            };
-            this.waveIn.DataAvailable += this.OnCaptureDataAvailable;
-            this.waveIn.RecordingStopped += this.OnRecordingStopped;
-
-            this.webSocket = new ClientWebSocket();
-            this.webSocket.Options.SetRequestHeader("Authorization", $"Bearer {authToken}");
-            var uri = BuildVoiceWebSocketUri(serverBaseUrl, call.SessionId);
-            this.cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            await this.webSocket.ConnectAsync(uri, this.cancellationTokenSource.Token).ConfigureAwait(false);
-
-            this.receiveLoopTask = Task.Run(() => this.ReceiveLoopAsync(this.cancellationTokenSource.Token), this.cancellationTokenSource.Token);
-            this.waveIn.StartRecording();
-            this.IsConnected = true;
+                await this.StopCoreAsync().ConfigureAwait(false);
+                throw;
+            }
         }
-        catch
+        finally
         {
-            await this.StopAsync().ConfigureAwait(false);
-            throw;
+            this.lifecycleLock.Release();
         }
     }
 
@@ -158,6 +167,19 @@ public sealed class VoiceChatSession : IDisposable
     }
 
     public async Task StopAsync()
+    {
+        await this.lifecycleLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await this.StopCoreAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            this.lifecycleLock.Release();
+        }
+    }
+
+    private async Task StopCoreAsync()
     {
         this.IsConnected = false;
         this.cancellationTokenSource?.Cancel();
@@ -184,7 +206,8 @@ public sealed class VoiceChatSession : IDisposable
             {
                 if (this.webSocket.State is WebSocketState.Open or WebSocketState.CloseReceived)
                 {
-                    await this.webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Call ended", CancellationToken.None).ConfigureAwait(false);
+                    using var closeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    await this.webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Call ended", closeTimeout.Token).ConfigureAwait(false);
                 }
             }
             catch

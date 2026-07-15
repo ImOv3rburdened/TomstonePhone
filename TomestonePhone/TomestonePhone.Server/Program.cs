@@ -187,6 +187,17 @@ app.MapPut("/api/contacts", async (HttpContext context, ContactNoteUpdateRequest
     return Results.Ok(await directory.UpsertContactAsync(accountId.Value, request, cancellationToken));
 });
 
+app.MapGet("/api/contacts/search", async (HttpContext context, string query, IAccountService accounts, IPhoneDirectoryService directory, CancellationToken cancellationToken) =>
+{
+    var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
+    if (accountId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    return Results.Ok(await directory.SearchPeopleAsync(accountId.Value, query ?? string.Empty, cancellationToken));
+});
+
 app.MapDelete("/api/contacts/{contactAccountId:guid}", async (HttpContext context, Guid contactAccountId, IAccountService accounts, IPhoneDirectoryService directory, CancellationToken cancellationToken) =>
 {
     var accountId = await ResolveAccountIdAsync(context, accounts, cancellationToken);
@@ -211,7 +222,14 @@ app.MapPost("/api/contacts/block", async (HttpContext context, BlockAccountReque
         return Results.Unauthorized();
     }
 
-    return Results.Ok(new { success = await directory.BlockAccountAsync(accountId.Value, request, cancellationToken) });
+    try
+    {
+        return Results.Ok(new { success = await directory.BlockAccountAsync(accountId.Value, request, cancellationToken) });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
 });
 
 app.MapPost("/api/contacts/unblock", async (HttpContext context, UnblockAccountRequest request, IAccountService accounts, IPhoneDirectoryService directory, CancellationToken cancellationToken) =>
@@ -352,7 +370,14 @@ app.MapPost("/api/conversations", async (HttpContext context, CreateConversation
         return Results.StatusCode(StatusCodes.Status423Locked);
     }
 
-    return Results.Ok(await chat.CreateConversationAsync(accountId.Value, request, cancellationToken));
+    try
+    {
+        return Results.Ok(await chat.CreateConversationAsync(accountId.Value, request, cancellationToken));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
 });
 
 app.MapPost("/api/conversations/direct", async (HttpContext context, StartDirectConversationRequest request, IAccountService accounts, IChatService chat, CancellationToken cancellationToken) =>
@@ -469,8 +494,15 @@ app.MapPost("/api/calls/session/start", async (HttpContext context, StartCallReq
         return Results.StatusCode(StatusCodes.Status423Locked);
     }
 
-    var session = await calls.StartOrJoinActiveCallAsync(accountId.Value, request, cancellationToken);
-    return session is null ? Results.NotFound() : Results.Ok(session);
+    try
+    {
+        var session = await calls.StartOrJoinActiveCallAsync(accountId.Value, request, cancellationToken);
+        return session is null ? Results.NotFound() : Results.Ok(session);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
 });
 
 app.MapPost("/api/calls/session/end", async (HttpContext context, EndActiveCallRequest request, IAccountService accounts, ICallService calls, CancellationToken cancellationToken) =>
@@ -806,9 +838,6 @@ static bool IsClientVersionAllowed(string? clientVersion, string? minimumVersion
 
     return current >= minimum;
 }
-
-
-
 
 
 

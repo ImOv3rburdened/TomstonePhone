@@ -6,6 +6,7 @@ using Dalamud.Interface.Textures;
 using Dalamud.Interface.Textures.TextureWraps;
 using Dalamud.Plugin.Services;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats;
 using SixLabors.ImageSharp.Formats.Gif;
 using SixLabors.ImageSharp.PixelFormats;
 
@@ -13,9 +14,18 @@ namespace TomestonePhone.UI;
 
 public sealed class GifEmbedRenderer : IDisposable
 {
-    private static readonly HttpClient HttpClient = new();
+    private const int MaxCachedGifs = 24;
+    private const int MaxGifBytes = 12 * 1024 * 1024;
+    private const int MaxDimension = 2048;
+    private const int MaxFrameCount = 120;
+    private const long MaxDecodedBytes = 128L * 1024 * 1024;
+    private static readonly HttpClient HttpClient = new()
+    {
+        Timeout = TimeSpan.FromSeconds(15),
+    };
     private readonly ITextureProvider textureProvider;
     private readonly ConcurrentDictionary<string, GifAnimationState> cache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly CancellationTokenSource loadCancellation = new();
 
     public GifEmbedRenderer(ITextureProvider textureProvider)
     {
@@ -29,14 +39,16 @@ public sealed class GifEmbedRenderer : IDisposable
             return false;
         }
 
-        return uri.AbsolutePath.EndsWith(".gif", StringComparison.OrdinalIgnoreCase);
+        return IsSafeRemoteUri(uri) && uri.AbsolutePath.EndsWith(".gif", StringComparison.OrdinalIgnoreCase);
     }
 
     public void Draw(string url, float maxWidth, bool animate)
     {
         url = url.Replace("&amp;", "&");
         var state = this.cache.GetOrAdd(url, static _ => new GifAnimationState());
-        state.EnsureLoadStarted(() => this.LoadAsync(url, state));
+        state.Touch();
+        this.TrimCache(url);
+        state.EnsureLoadStarted(() => this.LoadAsync(url, state, this.loadCancellation.Token));
 
         switch (state.Status)
         {
@@ -75,26 +87,33 @@ public sealed class GifEmbedRenderer : IDisposable
 
     public void Dispose()
     {
+        this.loadCancellation.Cancel();
         foreach (var state in this.cache.Values)
         {
             state.Dispose();
         }
 
         this.cache.Clear();
+        this.loadCancellation.Dispose();
     }
 
-    private async Task LoadAsync(string url, GifAnimationState state)
+    private async Task LoadAsync(string url, GifAnimationState state, CancellationToken cancellationToken)
     {
         try
         {
             url = System.Net.WebUtility.HtmlDecode(url);
             url = url.Replace(".com//media", ".com/media");
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var requestedUri) || !IsSafeRemoteUri(requestedUri))
+            {
+                state.SetFailed("Only public HTTPS GIF URLs are supported.");
+                return;
+            }
 
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            using var request = new HttpRequestMessage(HttpMethod.Get, requestedUri);
             request.Headers.UserAgent.ParseAdd(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             );
-            using var response = await HttpClient.SendAsync(request).ConfigureAwait(false);
+            using var response = await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -102,9 +121,35 @@ public sealed class GifEmbedRenderer : IDisposable
                 return;
             }
 
-            await using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            if (response.RequestMessage?.RequestUri is not { } finalUri || !IsSafeRemoteUri(finalUri))
+            {
+                state.SetFailed("The GIF redirected to an unsupported address.");
+                return;
+            }
 
-            using var image = await Image.LoadAsync<Rgba32>(stream).ConfigureAwait(false);
+            if (response.Content.Headers.ContentLength is > MaxGifBytes)
+            {
+                state.SetFailed("GIF is too large.");
+                return;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            using var buffered = await ReadBoundedAsync(stream, cancellationToken).ConfigureAwait(false);
+            var info = await Image.IdentifyAsync(buffered, cancellationToken).ConfigureAwait(false);
+            if (info is null || info.Width <= 0 || info.Height <= 0 || info.Width > MaxDimension || info.Height > MaxDimension)
+            {
+                state.SetFailed("GIF dimensions are unsupported.");
+                return;
+            }
+
+            buffered.Position = 0;
+            using var image = await Image.LoadAsync<Rgba32>(new DecoderOptions { MaxFrames = MaxFrameCount }, buffered, cancellationToken).ConfigureAwait(false);
+            var decodedBytes = (long)image.Width * image.Height * image.Frames.Count * 4;
+            if (image.Frames.Count > MaxFrameCount || decodedBytes > MaxDecodedBytes)
+            {
+                state.SetFailed("GIF animation is too complex.");
+                return;
+            }
             var frames = new List<GifFrameData>(image.Frames.Count);
 
             for (var index = 0; index < image.Frames.Count; index++)
@@ -133,6 +178,59 @@ public sealed class GifEmbedRenderer : IDisposable
         }
     }
 
+    private static bool IsSafeRemoteUri(Uri uri)
+    {
+        var normalizedHost = uri.Host.TrimEnd('.');
+        return string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrEmpty(uri.UserInfo)
+            && uri.HostNameType == UriHostNameType.Dns
+            && !string.Equals(normalizedHost, "localhost", StringComparison.OrdinalIgnoreCase)
+            && !normalizedHost.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase)
+            && !normalizedHost.EndsWith(".local", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<MemoryStream> ReadBoundedAsync(Stream source, CancellationToken cancellationToken)
+    {
+        var destination = new MemoryStream();
+        var buffer = new byte[81920];
+        while (true)
+        {
+            var read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                destination.Position = 0;
+                return destination;
+            }
+
+            if (destination.Length + read > MaxGifBytes)
+            {
+                destination.Dispose();
+                throw new InvalidDataException("GIF is too large.");
+            }
+
+            await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private void TrimCache(string currentUrl)
+    {
+        if (this.cache.Count <= MaxCachedGifs)
+        {
+            return;
+        }
+
+        foreach (var entry in this.cache
+                     .Where(item => !string.Equals(item.Key, currentUrl, StringComparison.OrdinalIgnoreCase) && item.Value.CanEvict)
+                     .OrderBy(item => item.Value.LastAccessUtc)
+                     .Take(this.cache.Count - MaxCachedGifs))
+        {
+            if (this.cache.TryRemove(entry.Key, out var removed))
+            {
+                removed.Dispose();
+            }
+        }
+    }
+
     private Vector2 GetScaledSize(int width, int height, float maxWidth)
     {
         if (width <= 0 || height <= 0)
@@ -157,6 +255,7 @@ public sealed class GifEmbedRenderer : IDisposable
         private int currentFrameIndex;
         private DateTime nextFrameUtc = DateTime.UtcNow;
         private int loadStarted;
+        private int disposed;
         private List<GifFrameData>? decodedFrames;
 
         public GifLoadStatus Status { get; private set; } = GifLoadStatus.Loading;
@@ -164,6 +263,15 @@ public sealed class GifEmbedRenderer : IDisposable
         public string? Error { get; private set; }
 
         public List<GifFrameTexture> Frames { get; } = [];
+
+        public DateTime LastAccessUtc { get; private set; } = DateTime.UtcNow;
+
+        public bool CanEvict => this.Status is GifLoadStatus.Ready or GifLoadStatus.Failed;
+
+        public void Touch()
+        {
+            this.LastAccessUtc = DateTime.UtcNow;
+        }
 
         public void EnsureLoadStarted(Func<Task> load)
         {
@@ -197,6 +305,11 @@ public sealed class GifEmbedRenderer : IDisposable
 
         public void SetDecodedFrames(List<GifFrameData> frames)
         {
+            if (Volatile.Read(ref this.disposed) != 0)
+            {
+                return;
+            }
+
             this.decodedFrames = frames;
             this.Status = GifLoadStatus.Decoded;
         }
@@ -248,12 +361,22 @@ public sealed class GifEmbedRenderer : IDisposable
 
         public void SetFailed(string? error = null)
         {
+            if (Volatile.Read(ref this.disposed) != 0)
+            {
+                return;
+            }
+
             this.Error = error;
             this.Status = GifLoadStatus.Failed;
         }
 
         public void Dispose()
         {
+            if (Interlocked.Exchange(ref this.disposed, 1) != 0)
+            {
+                return;
+            }
+
             this.decodedFrames = null;
             foreach (var frame in this.Frames)
             {
@@ -284,5 +407,3 @@ public sealed class GifEmbedRenderer : IDisposable
         }
     }
 }
-
-

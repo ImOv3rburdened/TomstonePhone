@@ -12,19 +12,21 @@ public sealed class TomestonePhoneClient : IDisposable
     private static readonly string CurrentClientVersion = typeof(TomestonePhoneClient).Assembly.GetName().Version?.ToString(4) ?? "0.0.0.0";
     private readonly Configuration configuration;
     private readonly IPluginLog log;
-    private readonly HttpClient httpClient = new();
+    private readonly AsyncLocal<string?> requestAuthToken = new();
+    private readonly HttpClient httpClient;
 
     public TomestonePhoneClient(Configuration configuration, IPluginLog log)
     {
         this.configuration = configuration;
         this.log = log;
+        this.httpClient = new HttpClient(new RequestHeaderHandler(() => this.requestAuthToken.Value));
         this.httpClient.Timeout = TimeSpan.FromSeconds(15);
     }
 
     public async Task<LoginResponse> LoginAsync(string username, string password, CancellationToken cancellationToken = default)
     {
         this.ApplyBaseAddress();
-        var response = await this.httpClient.PostAsJsonAsync("/api/auth/login", new LoginRequest(username, password), cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/auth/login", new LoginRequest(username, password), cancellationToken);
         if (response.StatusCode == HttpStatusCode.Unauthorized)
         {
             var payload = await this.TryReadErrorPayloadAsync(response, cancellationToken);
@@ -48,7 +50,7 @@ public sealed class TomestonePhoneClient : IDisposable
             PrivacyPolicy.Version,
             DateTimeOffset.UtcNow);
 
-        var response = await this.httpClient.PostAsJsonAsync("/api/auth/register", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/auth/register", request, cancellationToken);
         await this.EnsureSuccessAsync(response, "Registration", cancellationToken);
         return await response.Content.ReadFromJsonAsync<RegisterResponse>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Registration returned no payload.");
     }
@@ -56,7 +58,7 @@ public sealed class TomestonePhoneClient : IDisposable
     public async Task<ClientVersionPolicyResult> GetVersionPolicyAsync(CancellationToken cancellationToken = default)
     {
         this.ApplyBaseAddress();
-        var response = await this.httpClient.GetAsync("/api/client/version-policy", cancellationToken);
+        using var response = await this.httpClient.GetAsync("/api/client/version-policy", cancellationToken);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<ClientVersionPolicyResult>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Version policy returned no payload.");
     }
@@ -65,16 +67,26 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.GetAsync("/api/phone/me", cancellationToken);
+        using var response = await this.httpClient.GetAsync("/api/phone/me", cancellationToken);
         await this.EnsureSuccessAsync(response, "Account snapshot", cancellationToken);
         return await response.Content.ReadFromJsonAsync<PhoneSnapshot>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Snapshot returned no payload.");
+    }
+
+    public async Task<bool> HeartbeatAsync(string token, CancellationToken cancellationToken = default)
+    {
+        this.ApplyBaseAddress();
+        this.SetAuth(token);
+        using var response = await this.httpClient.PostAsync("/api/account/heartbeat", null, cancellationToken);
+        await this.EnsureSuccessAsync(response, "Account heartbeat", cancellationToken);
+        var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
+        return payload?.Success ?? false;
     }
 
     public async Task<PhoneProfile> UpdateGameIdentityAsync(string token, UpdateGameIdentityRequest request, CancellationToken cancellationToken = default)
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/account/game-identity", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/account/game-identity", request, cancellationToken);
         await this.EnsureSuccessAsync(response, "Game identity update", cancellationToken);
         return await response.Content.ReadFromJsonAsync<PhoneProfile>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Game identity update returned no payload.");
     }
@@ -83,7 +95,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.GetAsync($"/api/conversations/{conversationId}", cancellationToken);
+        using var response = await this.httpClient.GetAsync($"/api/conversations/{conversationId}", cancellationToken);
         await this.EnsureSuccessAsync(response, "Conversation detail", cancellationToken);
         return await response.Content.ReadFromJsonAsync<ConversationDetail>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Conversation detail returned no payload.");
     }
@@ -92,7 +104,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.GetAsync($"/api/conversations/{conversationId}/messages", cancellationToken);
+        using var response = await this.httpClient.GetAsync($"/api/conversations/{conversationId}/messages", cancellationToken);
         await this.EnsureSuccessAsync(response, "Conversation messages", cancellationToken);
         return await response.Content.ReadFromJsonAsync<ConversationMessagePage>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Conversation page returned no payload.");
     }
@@ -101,7 +113,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/conversations/direct", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/conversations/direct", request, cancellationToken);
         await this.EnsureSuccessAsync(response, "Direct conversation", cancellationToken);
         return await response.Content.ReadFromJsonAsync<ConversationSummary>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Direct conversation returned no payload.");
     }
@@ -111,7 +123,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/conversations", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/conversations", request, cancellationToken);
         await this.EnsureSuccessAsync(response, "Conversation creation", cancellationToken);
         return await response.Content.ReadFromJsonAsync<ConversationSummary>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Conversation creation returned no payload.");
     }
@@ -120,7 +132,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/calls/start", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/calls/start", request, cancellationToken);
         await this.EnsureSuccessAsync(response, "Call start", cancellationToken);
         return await response.Content.ReadFromJsonAsync<CallSummary>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Call start returned no payload.");
     }
@@ -129,7 +141,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.GetAsync("/api/calls/active", cancellationToken);
+        using var response = await this.httpClient.GetAsync("/api/calls/active", cancellationToken);
         await this.EnsureSuccessAsync(response, "Active calls", cancellationToken);
         return await response.Content.ReadFromJsonAsync<List<ActiveCallSessionRecord>>(cancellationToken: cancellationToken) ?? [];
     }
@@ -138,7 +150,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/calls/session/start", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/calls/session/start", request, cancellationToken);
         await this.EnsureSuccessAsync(response, "Active call session", cancellationToken);
         return await response.Content.ReadFromJsonAsync<ActiveCallSessionRecord>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Active call session returned no payload.");
     }
@@ -147,7 +159,12 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/calls/session/end", new EndActiveCallRequest(sessionId), cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/calls/session/end", new EndActiveCallRequest(sessionId), cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
         if (!response.IsSuccessStatusCode)
         {
             await this.EnsureSuccessAsync(response, "End active call", cancellationToken);
@@ -160,7 +177,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsync("/api/calls/missed/acknowledge", null, cancellationToken);
+        using var response = await this.httpClient.PostAsync("/api/calls/missed/acknowledge", null, cancellationToken);
         await this.EnsureSuccessAsync(response, "Acknowledge missed calls", cancellationToken);
         var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
         return payload?.Count ?? 0;
@@ -169,7 +186,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/contacts/block", new BlockAccountRequest(targetAccountId), cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/contacts/block", new BlockAccountRequest(targetAccountId), cancellationToken);
         await this.EnsureSuccessAsync(response, "Block account", cancellationToken);
         var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
         return payload?.Success ?? false;
@@ -179,7 +196,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/contacts/unblock", new UnblockAccountRequest(targetAccountId), cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/contacts/unblock", new UnblockAccountRequest(targetAccountId), cancellationToken);
         await this.EnsureSuccessAsync(response, "Unblock account", cancellationToken);
         var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
         return payload?.Success ?? false;
@@ -189,16 +206,25 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PutAsJsonAsync("/api/contacts", new ContactNoteUpdateRequest(targetAccountId, displayName, note), cancellationToken);
+        using var response = await this.httpClient.PutAsJsonAsync("/api/contacts", new ContactNoteUpdateRequest(targetAccountId, displayName, note), cancellationToken);
         await this.EnsureSuccessAsync(response, "Add contact", cancellationToken);
         return await response.Content.ReadFromJsonAsync<ContactRecord>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Add contact returned no payload.");
+    }
+
+    public async Task<IReadOnlyList<DirectoryPersonRecord>> SearchPeopleAsync(string token, string query, CancellationToken cancellationToken = default)
+    {
+        this.ApplyBaseAddress();
+        this.SetAuth(token);
+        using var response = await this.httpClient.GetAsync($"/api/contacts/search?query={Uri.EscapeDataString(query)}", cancellationToken);
+        await this.EnsureSuccessAsync(response, "People search", cancellationToken);
+        return await response.Content.ReadFromJsonAsync<List<DirectoryPersonRecord>>(cancellationToken: cancellationToken) ?? [];
     }
 
     public async Task<bool> RemoveContactAsync(string token, Guid contactAccountId, CancellationToken cancellationToken = default)
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.DeleteAsync($"/api/contacts/{contactAccountId}", cancellationToken);
+        using var response = await this.httpClient.DeleteAsync($"/api/contacts/{contactAccountId}", cancellationToken);
         await this.EnsureSuccessAsync(response, "Remove contact", cancellationToken);
         var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
         return payload?.Success ?? false;
@@ -208,7 +234,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/messages", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/messages", request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             await this.EnsureSuccessAsync(response, "Message delivery", cancellationToken);
@@ -221,7 +247,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/friends", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/friends", request, cancellationToken);
         await this.EnsureSuccessAsync(response, "Friend request", cancellationToken);
         return await response.Content.ReadFromJsonAsync<FriendRequestRecord>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Friend request returned no payload.");
     }
@@ -230,7 +256,12 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/friends/respond", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/friends/respond", request, cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
         if (!response.IsSuccessStatusCode)
         {
             await this.EnsureSuccessAsync(response, "Friend request response", cancellationToken);
@@ -243,7 +274,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/friends/remove", new RemoveFriendRequest(friendAccountId), cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/friends/remove", new RemoveFriendRequest(friendAccountId), cancellationToken);
         await this.EnsureSuccessAsync(response, "Remove friend", cancellationToken);
         var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
         return payload?.Success ?? false;
@@ -253,7 +284,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/conversations/moderate", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/conversations/moderate", request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             await this.EnsureSuccessAsync(response, "Conversation moderation", cancellationToken);
@@ -266,7 +297,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/reports/reply", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/reports/reply", request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             await this.EnsureSuccessAsync(response, "Report reply", cancellationToken);
@@ -279,7 +310,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/account/password", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/account/password", request, cancellationToken);
         await this.EnsureSuccessAsync(response, "Password change", cancellationToken);
         var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
         return payload?.Success ?? false;
@@ -289,7 +320,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/account/delete", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/account/delete", request, cancellationToken);
         await this.EnsureSuccessAsync(response, "Delete account", cancellationToken);
         var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
         return payload?.Success ?? false;
@@ -299,7 +330,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/account/notifications", new UpdateNotificationSettingsRequest(muted), cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/account/notifications", new UpdateNotificationSettingsRequest(muted), cancellationToken);
         await this.EnsureSuccessAsync(response, "Notification settings", cancellationToken);
         return await response.Content.ReadFromJsonAsync<PhoneProfile>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Notification settings returned no payload.");
     }
@@ -308,7 +339,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/account/presence", new UpdatePresenceStatusRequest(presenceStatus), cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/account/presence", new UpdatePresenceStatusRequest(presenceStatus), cancellationToken);
         await this.EnsureSuccessAsync(response, "Presence status", cancellationToken);
         return await response.Content.ReadFromJsonAsync<PhoneProfile>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Presence status returned no payload.");
     }
@@ -317,7 +348,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/account/privacy", new AcceptPrivacyPolicyRequest(PrivacyPolicy.Version, DateTimeOffset.UtcNow), cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/account/privacy", new AcceptPrivacyPolicyRequest(PrivacyPolicy.Version, DateTimeOffset.UtcNow), cancellationToken);
         await this.EnsureSuccessAsync(response, "Privacy acceptance", cancellationToken);
         return await response.Content.ReadFromJsonAsync<PhoneProfile>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Privacy acceptance returned no payload.");
     }
@@ -326,7 +357,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.GetAsync("/api/support/tickets", cancellationToken);
+        using var response = await this.httpClient.GetAsync("/api/support/tickets", cancellationToken);
         await this.EnsureSuccessAsync(response, "Support tickets", cancellationToken);
         return await response.Content.ReadFromJsonAsync<List<SupportTicketRecord>>(cancellationToken: cancellationToken) ?? [];
     }
@@ -335,7 +366,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/support/tickets", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/support/tickets", request, cancellationToken);
         await this.EnsureSuccessAsync(response, "Support ticket", cancellationToken);
         return await response.Content.ReadFromJsonAsync<SupportTicketRecord>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Support ticket returned no payload.");
     }
@@ -344,7 +375,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsync($"/api/support/tickets/{ticketId}/close", null, cancellationToken);
+        using var response = await this.httpClient.PostAsync($"/api/support/tickets/{ticketId}/close", null, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             await this.EnsureSuccessAsync(response, "Close support ticket", cancellationToken);
@@ -357,7 +388,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/support/tickets/participants", new AddSupportTicketParticipantRequest(ticketId, accountId), cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/support/tickets/participants", new AddSupportTicketParticipantRequest(ticketId, accountId), cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             await this.EnsureSuccessAsync(response, "Add support ticket participant", cancellationToken);
@@ -370,7 +401,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.GetAsync("/api/admin/dashboard", cancellationToken);
+        using var response = await this.httpClient.GetAsync("/api/admin/dashboard", cancellationToken);
         await this.EnsureSuccessAsync(response, "Admin dashboard", cancellationToken);
         return await response.Content.ReadFromJsonAsync<AdminDashboardSnapshot>(cancellationToken: cancellationToken) ?? throw new InvalidOperationException("Admin dashboard returned no payload.");
     }
@@ -379,7 +410,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/admin/account-role", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/admin/account-role", request, cancellationToken);
         await this.EnsureSuccessAsync(response, "Update account role", cancellationToken);
         var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
         return payload?.Success ?? false;
@@ -389,7 +420,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/admin/reset-password", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/admin/reset-password", request, cancellationToken);
         await this.EnsureSuccessAsync(response, "Owner password reset", cancellationToken);
         var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
         return payload?.Success ?? false;
@@ -400,7 +431,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/admin/account-status", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/admin/account-status", request, cancellationToken);
         await this.EnsureSuccessAsync(response, "Update account status", cancellationToken);
         var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
         return payload?.Success ?? false;
@@ -410,7 +441,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsJsonAsync("/api/admin/announcement", request, cancellationToken);
+        using var response = await this.httpClient.PostAsJsonAsync("/api/admin/announcement", request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             await this.EnsureSuccessAsync(response, "Server announcement", cancellationToken);
@@ -423,7 +454,7 @@ public sealed class TomestonePhoneClient : IDisposable
     {
         this.ApplyBaseAddress();
         this.SetAuth(token);
-        var response = await this.httpClient.PostAsync("/api/admin/announcement/clear", null, cancellationToken);
+        using var response = await this.httpClient.PostAsync("/api/admin/announcement/clear", null, cancellationToken);
         await this.EnsureSuccessAsync(response, "Clear server announcement", cancellationToken);
         var payload = await response.Content.ReadFromJsonAsync<OperationResult>(cancellationToken: cancellationToken);
         return payload?.Success ?? false;
@@ -471,6 +502,7 @@ public sealed class TomestonePhoneClient : IDisposable
     }
     private void ApplyBaseAddress()
     {
+        this.requestAuthToken.Value = null;
         if (!Configuration.TryValidateBackendUrl(this.configuration.ServerBaseUrl, out var target, out var error))
         {
             throw new InvalidOperationException(error);
@@ -482,13 +514,26 @@ public sealed class TomestonePhoneClient : IDisposable
             this.httpClient.BaseAddress = new Uri(target, UriKind.Absolute);
         }
 
-        this.httpClient.DefaultRequestHeaders.Remove(ClientVersionHeaderName);
-        this.httpClient.DefaultRequestHeaders.Add(ClientVersionHeaderName, CurrentClientVersion);
     }
 
     private void SetAuth(string token)
     {
-        this.httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        this.requestAuthToken.Value = token;
+    }
+
+    private sealed class RequestHeaderHandler(Func<string?> getAuthToken) : DelegatingHandler(new HttpClientHandler())
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            request.Headers.TryAddWithoutValidation(ClientVersionHeaderName, CurrentClientVersion);
+            var token = getAuthToken();
+            if (!string.IsNullOrWhiteSpace(token))
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            }
+
+            return base.SendAsync(request, cancellationToken);
+        }
     }
 
     private sealed class OperationResult
@@ -520,7 +565,3 @@ public sealed class ClientUpgradeRequiredException(string minimumVersion, string
 
     public string UpdateMessage { get; } = updateMessage;
 }
-
-
-
-

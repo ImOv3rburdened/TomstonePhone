@@ -136,6 +136,16 @@ public sealed class Configuration : IPluginConfiguration
 
     public List<Guid> SeenAnnouncementIds { get; set; } = [];
 
+    public List<Guid> SeenIncomingFriendRequestIds { get; set; } = [];
+
+    public List<PendingFriendRequestNotice> PendingOutgoingFriendRequestNotices { get; set; } = [];
+
+    public Guid FriendNotificationAccountId { get; set; }
+
+    public Guid ConversationNotificationAccountId { get; set; }
+
+    public Dictionary<Guid, DateTimeOffset> KnownConversationActivityUtc { get; set; } = [];
+
     public List<string> HomeAppOrder { get; set; } = [];
 
     public string GetLocalUserAssetDirectory()

@@ -83,6 +83,7 @@ public sealed class Plugin : IDalamudPlugin
         this.service.PluginInterface.UiBuilder.Draw -= this.DrawUi;
         this.service.PluginInterface.UiBuilder.OpenMainUi -= this.ToggleUiWithoutCommandEmote;
         this.service.PluginInterface.UiBuilder.OpenConfigUi -= this.OpenSettings;
+        this.phoneWindow.DisposeResources();
         this.windows.RemoveAllWindows();
         this.client.Dispose();
     }
@@ -159,11 +160,10 @@ public sealed class Plugin : IDalamudPlugin
 
     private void DrawUi()
     {
+        this.phoneWindow.TickBackground();
         this.windows.Draw();
     }
 }
-
-
 
 
 
