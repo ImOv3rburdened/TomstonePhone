@@ -100,6 +100,8 @@ public sealed class Configuration : IPluginConfiguration
 
     public string GiphyApiKey { get; set; } = string.Empty;
 
+    public string KlipyApiKey { get; set; } = string.Empty;
+
     public string GiphyRating { get; set; } = "pg-13";
 
     public bool LockViewport { get; set; } = false;
@@ -133,6 +135,8 @@ public sealed class Configuration : IPluginConfiguration
     public List<GifFavorite> GifFavorites { get; set; } = [];
 
     public List<Guid> SeenAnnouncementIds { get; set; } = [];
+
+    public List<string> HomeAppOrder { get; set; } = [];
 
     public string GetLocalUserAssetDirectory()
     {

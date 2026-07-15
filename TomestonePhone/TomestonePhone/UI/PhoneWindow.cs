@@ -44,7 +44,7 @@ public sealed class PhoneWindow : Window
     private const float MinimumWindowScale = 0.7f;
     private const float MaximumWindowScale = 1.35f;
     private const float DefaultWindowHeight = 952f;
-    private const string GiphyCreateAppUrl = "https://developers.giphy.com/dashboard/?create=true";
+    private const string KlipyCreateAppUrl = "https://partner.klipy.com/";
     private const double StartupSplashBlankSeconds = 1d;
     private const double StartupSplashLoadingSeconds = 2d;
     private const string StartupSplashBlankPath = "embedded://splash-screen-blank.png";
@@ -82,6 +82,7 @@ public sealed class PhoneWindow : Window
     private string ownerResetTarget = string.Empty;
     private string ownerResetPassword = string.Empty;
     private AdminDashboardSnapshot? adminDashboard;
+    private bool refreshStaffDashboardOnOpen = true;
     private string staffSearchQuery = string.Empty;
     private string staffTicketParticipantTarget = string.Empty;
     private Guid? selectedConversationId;
@@ -89,6 +90,10 @@ public sealed class PhoneWindow : Window
     private ConversationDetail? selectedConversationDetail;
     private string composeMessage = string.Empty;
     private string composeEmbedUrl = string.Empty;
+    private string gifSearchQuery = string.Empty;
+    private IReadOnlyList<GiphyGifResult> gifSearchResults = [];
+    private Task<IReadOnlyList<GiphyGifResult>>? pendingGifSearchTask;
+    private bool openGifPicker;
     private string directMessageTarget = string.Empty;
     private ContactRecord? selectedDirectMessageContact;
     private string groupAddTarget = string.Empty;
@@ -141,6 +146,22 @@ public sealed class PhoneWindow : Window
     private bool refreshOnNextDraw = true;
     private bool snapshotRefreshQueued;
     private bool snapshotRefreshQueuedSilently;
+    private bool friendNotificationStateInitialized;
+    private HashSet<Guid> knownIncomingFriendRequestIds = [];
+    private int homePage;
+    private float homePageDragOffset;
+    private bool homePointerDown;
+    private bool homePageDragging;
+    private int? homePageSnapTarget;
+    private Vector2 homePointerStart;
+    private PhoneTab? homePressedApp;
+    private PhoneTab? homeRenderedHoveredApp;
+    private PhoneTab? homeDraggedApp;
+    private bool homeLayoutChangedDuringDrag;
+    private double homePressStartedAt;
+    private float homeHoldElapsed;
+    private bool homeEditMode;
+    private double lastHomeDragPageChangeAt;
     private bool autoLoginAttempted;
     private string? lastChatDebugMessage;
     private MessageFolder activeMessageFolder = MessageFolder.Regular;
@@ -225,6 +246,7 @@ public sealed class PhoneWindow : Window
     public void DisposeResources()
     {
         this.voiceChatSession.Dispose();
+        this.giphyClient.Dispose();
         this.gifEmbedRenderer.Dispose();
         this.appIconRenderer.Dispose();
     }
@@ -710,15 +732,17 @@ public sealed class PhoneWindow : Window
     {
         var totalWidth = ImGui.GetContentRegionAvail().X;
         var totalHeight = ImGui.GetContentRegionAvail().Y;
-        var columns = 3;
-        var spacing = this.Scale(12f);
+        const int columns = 3;
+        const int rows = 4;
+        const int appsPerPage = columns * rows;
+        var spacing = this.Scale(8f);
         var sideInset = this.Scale(6f);
-        var topInset = this.Scale(10f);
+        var topInset = this.Scale(6f);
         var bottomInset = this.Scale(2f);
         this.GetDockMetrics(totalWidth, out _, out _, out _, out _, out var dockHeight);
-        var gridApps = new List<(string Label, string Glyph, PhoneTab Tab, int Badge)>
+        var availableApps = new List<(string Label, string Glyph, PhoneTab Tab, int Badge)>
         {
-            ("Friends", "F", PhoneTab.Friends, this.state.FriendRequests.Count(item => item.Status == FriendRequestStatus.Pending)),
+            ("Friends", "F", PhoneTab.Friends, this.state.FriendRequests.Count(item => item.Status == FriendRequestStatus.Pending && item.IsIncoming)),
             ("Wallpapers", "W", PhoneTab.Wallpapers, 0),
             ("Settings", "S", PhoneTab.Settings, 0),
             ("Legal", "L", PhoneTab.Legal, 0),
@@ -728,35 +752,299 @@ public sealed class PhoneWindow : Window
 
         if (this.state.CurrentProfile.Role is AccountRole.Owner or AccountRole.Admin or AccountRole.Moderator)
         {
-            gridApps.Add(("Staff", "A", PhoneTab.Staff, this.state.VisibleReports.Count(item => item.Status == ReportStatus.Open)));
+            availableApps.Add(("Staff", "A", PhoneTab.Staff, this.state.VisibleReports.Count(item => item.Status == ReportStatus.Open)));
         }
 
-        var rows = Math.Max(1, (int)Math.Ceiling(gridApps.Count / (float)columns));
-        var usableHeight = Math.Max(this.Scale(180f), totalHeight - dockHeight - topInset - bottomInset - spacing);
+        var appsByKey = availableApps.ToDictionary(item => item.Tab.ToString(), StringComparer.OrdinalIgnoreCase);
+        var slots = this.configuration.HomeAppOrder
+            .Select(value => value ?? string.Empty)
+            .ToList();
+        var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < slots.Count; index++)
+        {
+            if (string.IsNullOrWhiteSpace(slots[index]) || !appsByKey.ContainsKey(slots[index]) || !seenKeys.Add(slots[index]))
+            {
+                slots[index] = string.Empty;
+            }
+        }
+
+        foreach (var app in availableApps.Where(item => !seenKeys.Contains(item.Tab.ToString())))
+        {
+            var emptySlot = slots.FindIndex(string.IsNullOrWhiteSpace);
+            if (emptySlot >= 0)
+            {
+                slots[emptySlot] = app.Tab.ToString();
+            }
+            else
+            {
+                slots.Add(app.Tab.ToString());
+            }
+        }
+
+        var lastPopulatedSlot = Math.Max(0, slots.FindLastIndex(value => !string.IsNullOrWhiteSpace(value)));
+        var lastPopulatedPage = lastPopulatedSlot / appsPerPage;
+        var maxPage = lastPopulatedPage + 1;
+        while (slots.Count < (maxPage + 1) * appsPerPage)
+        {
+            slots.Add(string.Empty);
+        }
+
+        this.homePage = Math.Clamp(this.homePage, 0, maxPage);
+        if (this.homePageSnapTarget is { } pendingPage)
+        {
+            pendingPage = Math.Clamp(pendingPage, 0, maxPage);
+            this.homePageSnapTarget = pendingPage;
+            var targetOffset = (this.homePage - pendingPage) * totalWidth;
+            var smoothing = 1f - MathF.Exp(-10f * Math.Max(0.001f, ImGui.GetIO().DeltaTime));
+            this.homePageDragOffset += (targetOffset - this.homePageDragOffset) * smoothing;
+            if (Math.Abs(targetOffset - this.homePageDragOffset) <= this.Scale(0.75f))
+            {
+                this.homePage = pendingPage;
+                this.homePageDragOffset = 0f;
+                this.homePageSnapTarget = null;
+            }
+        }
+        var usableHeight = Math.Max(this.Scale(180f), totalHeight - dockHeight - bottomInset - spacing);
         var cellWidth = (totalWidth - sideInset * 2f - spacing * (columns - 1)) / columns;
-        var cellHeight = (usableHeight - spacing * Math.Max(0, rows - 1)) / rows;
+        var cellHeight = (usableHeight - topInset - spacing * (rows - 1)) / rows;
         var cell = MathF.Min(cellWidth, cellHeight);
         var gridWidth = cell * columns + spacing * (columns - 1);
-        var gridStartX = ImGui.GetCursorPosX() + Math.Max(0f, (totalWidth - gridWidth) * 0.5f);
-        var totalGridHeight = rows * cell + Math.Max(0, rows - 1) * spacing;
+        var pageOrigin = ImGui.GetCursorScreenPos();
+        var gridInsetX = Math.Max(0f, (totalWidth - gridWidth) * 0.5f);
+        var mouse = ImGui.GetIO().MousePos;
+        var now = ImGui.GetTime();
+        var leftHoldDuration = ImGui.GetIO().MouseDownDuration[0];
+        var previousLeftHoldDuration = ImGui.GetIO().MouseDownDurationPrev[0];
 
-        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + topInset);
-        for (var index = 0; index < gridApps.Count; index++)
+        bool IsInside(Vector2 point, Vector2 min, Vector2 max) => point.X >= min.X && point.X <= max.X && point.Y >= min.Y && point.Y <= max.Y;
+        int SlotAt(Vector2 point)
         {
-            if (index % columns == 0)
+            for (var localIndex = 0; localIndex < appsPerPage; localIndex++)
             {
-                ImGui.SetCursorPosX(gridStartX);
+                var column = localIndex % columns;
+                var row = localIndex / columns;
+                var min = pageOrigin + new Vector2(gridInsetX + column * (cell + spacing), topInset + row * (cell + spacing));
+                if (IsInside(point, min, min + new Vector2(cell, cell)))
+                {
+                    return this.homePage * appsPerPage + localIndex;
+                }
             }
 
-            var app = gridApps[index];
-            this.DrawAppIcon(app.Label, app.Glyph, app.Tab, app.Badge, cell, Vector4.Zero, Vector4.Zero);
-            if (index % columns < columns - 1 && index < gridApps.Count - 1)
+            return -1;
+        }
+
+        bool MoveAppToSlot(PhoneTab appTab, int targetSlot)
+        {
+            var sourceSlot = slots.FindIndex(value => string.Equals(value, appTab.ToString(), StringComparison.OrdinalIgnoreCase));
+            if (sourceSlot < 0 || targetSlot < 0 || targetSlot >= slots.Count || sourceSlot == targetSlot)
             {
-                ImGui.SameLine(0f, spacing);
+                return false;
+            }
+
+            var movingKey = slots[sourceSlot];
+            slots[sourceSlot] = string.Empty;
+            var carriedKey = movingKey;
+            for (var slot = targetSlot; slot < slots.Count; slot++)
+            {
+                (slots[slot], carriedKey) = (carriedKey, slots[slot]);
+                if (string.IsNullOrWhiteSpace(carriedKey))
+                {
+                    break;
+                }
+            }
+
+            this.configuration.HomeAppOrder = slots.ToList();
+            return true;
+        }
+
+        var pointerInsidePages = IsInside(mouse, pageOrigin, pageOrigin + new Vector2(totalWidth, usableHeight));
+        if (this.homePageSnapTarget is null && ImGui.IsMouseClicked(ImGuiMouseButton.Left) && pointerInsidePages)
+        {
+            this.homePointerDown = true;
+            this.homePageDragging = false;
+            this.homePointerStart = mouse;
+            this.homePressedApp = this.homeRenderedHoveredApp;
+            this.homePressStartedAt = now;
+            this.homeHoldElapsed = 0f;
+            if (this.homeEditMode)
+            {
+                this.homeDraggedApp = this.homePressedApp;
             }
         }
 
-        var dockCursorY = Math.Max(ImGui.GetCursorPosY() + this.Scale(6f), totalHeight - dockHeight - bottomInset);
+        if (this.homePointerDown && ImGui.IsMouseDown(ImGuiMouseButton.Left))
+        {
+            var delta = mouse - this.homePointerStart;
+            var stationaryHold = pointerInsidePages
+                && !this.homePageDragging
+                && delta.Length() < this.Scale(30f);
+            this.homeHoldElapsed = stationaryHold
+                ? this.homeHoldElapsed + Math.Max(0f, ImGui.GetIO().DeltaTime)
+                : 0f;
+            if (!this.homeEditMode
+                && !this.homePageDragging
+                && (this.homeHoldElapsed >= 1.2f || leftHoldDuration >= 1.2f)
+                && delta.Length() < this.Scale(30f))
+            {
+                this.homeEditMode = true;
+                this.homeDraggedApp = this.homePressedApp;
+                this.pendingStatus = "Editing Home Screen";
+            }
+            else if ((!this.homeEditMode || this.homeDraggedApp is null)
+                && (this.homePageDragging || Math.Abs(delta.X) > this.Scale(18f))
+                && Math.Abs(delta.X) > Math.Abs(delta.Y))
+            {
+                this.homePageDragging = true;
+                var atBoundary = (this.homePage == 0 && delta.X > 0f) || (this.homePage == maxPage && delta.X < 0f);
+                this.homePageDragOffset = atBoundary ? delta.X * 0.22f : delta.X;
+            }
+
+            if (this.homeEditMode && this.homeDraggedApp is not null && now - this.lastHomeDragPageChangeAt > 0.45d)
+            {
+                if (mouse.X < pageOrigin.X + this.Scale(24f) && this.homePage > 0)
+                {
+                    this.homePage--;
+                    this.lastHomeDragPageChangeAt = now;
+                }
+                else if (mouse.X > pageOrigin.X + totalWidth - this.Scale(24f) && this.homePage < maxPage)
+                {
+                    this.homePage++;
+                    this.lastHomeDragPageChangeAt = now;
+                }
+            }
+
+            if (this.homeEditMode && this.homeDraggedApp is { } liveDraggedTab)
+            {
+                var hoverTarget = SlotAt(mouse);
+                if (MoveAppToSlot(liveDraggedTab, hoverTarget))
+                {
+                    this.homeLayoutChangedDuringDrag = true;
+                }
+            }
+        }
+
+        if (this.homePointerDown && ImGui.IsMouseReleased(ImGuiMouseButton.Left))
+        {
+            var completedLongPress = !this.homePageDragging
+                && Math.Max(this.homeHoldElapsed, Math.Max(previousLeftHoldDuration, (float)(now - this.homePressStartedAt))) >= 1.2f
+                && (mouse - this.homePointerStart).Length() < this.Scale(30f);
+            if (this.homePageDragging)
+            {
+                var threshold = totalWidth * 0.30f;
+                var targetPage = this.homePage;
+                if (this.homePageDragOffset <= -threshold && this.homePage < maxPage)
+                {
+                    targetPage++;
+                }
+                else if (this.homePageDragOffset >= threshold && this.homePage > 0)
+                {
+                    targetPage--;
+                }
+                this.homePageSnapTarget = targetPage;
+            }
+            else if (completedLongPress)
+            {
+                this.homeEditMode = true;
+            }
+            else if (this.homeEditMode
+                && this.homeDraggedApp is not null
+                && (mouse - this.homePointerStart).Length() < this.Scale(10f))
+            {
+                this.homeEditMode = false;
+            }
+            else if (this.homeEditMode && this.homeDraggedApp is { } draggedTab)
+            {
+                var target = SlotAt(mouse);
+                if (MoveAppToSlot(draggedTab, target))
+                {
+                    this.homeLayoutChangedDuringDrag = true;
+                }
+                if (this.homeLayoutChangedDuringDrag)
+                {
+                    this.SaveConfiguration();
+                }
+            }
+            else if (this.homeEditMode && this.homePressedApp is null && (mouse - this.homePointerStart).Length() < this.Scale(10f))
+            {
+                this.homeEditMode = false;
+            }
+            else if (!completedLongPress && this.homePressedApp is { } openTab && (mouse - this.homePointerStart).Length() < this.Scale(10f))
+            {
+                this.showHomeScreen = false;
+                this.activeTab = openTab;
+            }
+
+            this.homePointerDown = false;
+            this.homePageDragging = false;
+            if (this.homePageSnapTarget is null)
+            {
+                this.homePageDragOffset = 0f;
+            }
+            this.homePressedApp = null;
+            this.homeDraggedApp = null;
+            this.homeLayoutChangedDuringDrag = false;
+            this.homeHoldElapsed = 0f;
+        }
+
+        using var transparentPages = ImRaii.PushColor(ImGuiCol.ChildBg, Vector4.Zero);
+        using (var pageViewport = ImRaii.Child("home-pages", new Vector2(totalWidth, usableHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+        {
+            if (pageViewport.Success)
+            {
+                var viewportOrigin = ImGui.GetWindowPos();
+                this.homeRenderedHoveredApp = null;
+                ImGui.SetCursorScreenPos(viewportOrigin);
+                ImGui.InvisibleButton("##home-page-gesture-surface", new Vector2(totalWidth, usableHeight));
+                if (this.homeEditMode)
+                {
+                    ImGui.SetCursorScreenPos(viewportOrigin + new Vector2(totalWidth - this.Scale(78f), this.Scale(4f)));
+                    if (this.DrawPhonePillButton("Done##home-edit", new Vector2(this.Scale(70f), this.Scale(28f))))
+                    {
+                        this.homeEditMode = false;
+                        this.homeDraggedApp = null;
+                        this.homePointerDown = false;
+                    }
+                }
+                for (var page = 0; page <= maxPage; page++)
+                {
+                    var pageX = (page - this.homePage) * totalWidth + this.homePageDragOffset;
+                    for (var localIndex = 0; localIndex < appsPerPage; localIndex++)
+                    {
+                        var slot = page * appsPerPage + localIndex;
+                        if (slot >= slots.Count || string.IsNullOrWhiteSpace(slots[slot]) || !appsByKey.TryGetValue(slots[slot], out var app))
+                        {
+                            continue;
+                        }
+
+                        if (this.homeEditMode && this.homeDraggedApp == app.Tab && this.homePointerDown)
+                        {
+                            continue;
+                        }
+
+                        var column = localIndex % columns;
+                        var row = localIndex / columns;
+                        var wiggleX = this.homeEditMode ? MathF.Sin((float)(now * 10d + slot * 1.7d)) * this.Scale(3f) : 0f;
+                        var wiggleY = this.homeEditMode ? MathF.Cos((float)(now * 9d + slot * 1.3d)) * this.Scale(1.8f) : 0f;
+                        var iconPosition = viewportOrigin + new Vector2(pageX + gridInsetX + column * (cell + spacing) + wiggleX, topInset + row * (cell + spacing) + wiggleY);
+                        if (page == this.homePage && IsInside(mouse, iconPosition, iconPosition + new Vector2(cell, cell)))
+                        {
+                            this.homeRenderedHoveredApp = app.Tab;
+                        }
+                        ImGui.SetCursorScreenPos(iconPosition);
+                        this.DrawAppIcon(app.Label, app.Glyph, app.Tab, app.Badge, cell, Vector4.Zero, Vector4.Zero, false);
+                    }
+                }
+
+                if (this.homeEditMode && this.homeDraggedApp is { } floatingTab && appsByKey.TryGetValue(floatingTab.ToString(), out var floatingApp) && this.homePointerDown)
+                {
+                    ImGui.SetCursorScreenPos(mouse - new Vector2(cell * 0.5f));
+                    this.DrawAppIcon(floatingApp.Label, floatingApp.Glyph, floatingApp.Tab, floatingApp.Badge, cell, Vector4.Zero, Vector4.Zero, false);
+                }
+
+            }
+        }
+
+        var dockCursorY = Math.Max(0f, totalHeight - dockHeight - bottomInset);
         ImGui.SetCursorPosY(dockCursorY);
 
         this.DrawDock();
@@ -812,7 +1100,7 @@ public sealed class PhoneWindow : Window
         };
     }
 
-    private void DrawAppIcon(string label, string glyph, PhoneTab tab, int badgeCount, float width, Vector4 topColor, Vector4 bottomColor)
+    private void DrawAppIcon(string label, string glyph, PhoneTab tab, int badgeCount, float width, Vector4 topColor, Vector4 bottomColor, bool openOnClick = true)
     {
         var cardHeight = width;
         using var transparentCell = ImRaii.PushColor(ImGuiCol.ChildBg, Vector4.Zero);
@@ -867,7 +1155,7 @@ public sealed class PhoneWindow : Window
             draw.AddText(ImGui.GetFont(), badgeFontSize, new Vector2(badgeCenter.X - badgeTextSize.X * 0.5f, badgeCenter.Y - badgeTextSize.Y * 0.5f), ImGui.GetColorU32(Vector4.One), badgeText);
         }
 
-        if (ImGui.InvisibleButton($"{label}##open", new Vector2(width, cardHeight)))
+        if (ImGui.InvisibleButton($"{label}##open", new Vector2(width, cardHeight)) && openOnClick)
         {
             this.showHomeScreen = false;
             this.activeTab = tab;
@@ -1102,12 +1390,22 @@ public sealed class PhoneWindow : Window
                     else if (!this.selectedConversationDetail.IsGroup && this.selectedConversationDetail.Members.FirstOrDefault(item => item.AccountId != this.state.CurrentProfile.AccountId) is { } otherMember && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
                     {
                         var actionWidth = (ImGui.GetContentRegionAvail().X - this.Scale(24f)) / 3f;
-                        if (this.DrawPhonePillButton("Save Contact", new Vector2(actionWidth, this.Scale(32f))))
+                        if (this.DrawPhonePillButton("Add Friend", new Vector2(actionWidth, this.Scale(32f))))
                         {
-                            var contact = this.client.AddContactAsync(this.configuration.AuthToken, otherMember.AccountId, otherMember.DisplayName, string.Empty).GetAwaiter().GetResult();
-                            this.state.Contacts.RemoveAll(item => item.Id == contact.Id);
-                            this.state.Contacts.Add(contact);
-                            this.pendingStatus = "Contact saved";
+                            try
+                            {
+                                var request = this.client.CreateFriendRequestAsync(
+                                    this.configuration.AuthToken,
+                                    new FriendRequestCreateRequest(otherMember.PhoneNumber, null)).GetAwaiter().GetResult();
+                                this.pendingStatus = request.Status == FriendRequestStatus.Accepted
+                                    ? "Friend paired"
+                                    : "Friend request sent";
+                                this.RefreshSnapshot();
+                            }
+                            catch (Exception ex)
+                            {
+                                this.pendingStatus = this.SanitizeUserFacingError(ex.Message);
+                            }
                         }
                         ImGui.SameLine();
                         if (this.DrawPhonePillButton("Call", new Vector2(actionWidth, this.Scale(32f))))
@@ -1225,6 +1523,12 @@ public sealed class PhoneWindow : Window
                             this.SendComposedMessage(selectedId);
                         }
                         ImGui.TextDisabled(helperText);
+                        ImGui.SameLine();
+                        if (this.DrawPhonePillButton("GIF", new Vector2(this.Scale(58f), this.Scale(26f))))
+                        {
+                            this.openGifPicker = true;
+                        }
+                        this.DrawGifPicker(selectedId);
                     }
                 }
             }
@@ -1648,46 +1952,44 @@ public sealed class PhoneWindow : Window
     }
     private void DrawContacts()
     {
-        using (var add = ImRaii.Child("contacts-add-card", new Vector2(-1f, this.Scale(96f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+        using (var add = ImRaii.Child("contacts-search-card", new Vector2(-1f, this.Scale(112f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
         {
             if (add.Success)
             {
-                ImGui.TextDisabled("Add Contact");
-                var contactButtonWidth = Math.Max(this.Scale(80f), ImGui.CalcTextSize("Add").X + this.Scale(30f));
-                using var addTable = ImRaii.Table("contacts-add-compose", 2, ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.NoPadOuterX);
-                if (addTable.Success)
+                ImGui.TextDisabled("Search Contacts");
+                ImGui.SetNextItemWidth(-1f);
+                ImGui.InputTextWithHint("##contact-target", "Username or phone number", ref this.contactAddTarget, 64);
+                var actionSpacing = this.Scale(8f);
+                var actionWidth = Math.Max(this.Scale(86f), (ImGui.GetContentRegionAvail().X - actionSpacing) * 0.5f);
+                if (this.DrawPhonePillButton("Call##searched-contact", new Vector2(actionWidth, this.Scale(32f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken) && !string.IsNullOrWhiteSpace(this.contactAddTarget))
                 {
-                    ImGui.TableSetupColumn("Target", ImGuiTableColumnFlags.WidthStretch);
-                    ImGui.TableSetupColumn("Action", ImGuiTableColumnFlags.WidthFixed, contactButtonWidth);
-
-                    ImGui.TableNextColumn();
-                    ImGui.SetNextItemWidth(-1f);
-                    ImGui.InputTextWithHint("##contact-target", "Username or phone number", ref this.contactAddTarget, 64);
-
-                    ImGui.TableNextColumn();
-                    if (this.DrawPhonePillButton("Add", new Vector2(contactButtonWidth, this.Scale(32f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken) && !string.IsNullOrWhiteSpace(this.contactAddTarget))
+                    try
                     {
-                        try
-                        {
-                            var conversation = this.client.StartDirectConversationAsync(this.configuration.AuthToken, new StartDirectConversationRequest(this.contactAddTarget)).GetAwaiter().GetResult();
-                            var detail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
-                            var otherMember = detail.Members.FirstOrDefault(item => item.AccountId != this.state.CurrentProfile.AccountId);
-                            if (otherMember is null)
-                            {
-                                this.pendingStatus = "Contact could not be resolved";
-                            }
-                            else
-                            {
-                                this.client.AddContactAsync(this.configuration.AuthToken, otherMember.AccountId, otherMember.DisplayName, string.Empty).GetAwaiter().GetResult();
-                                this.contactAddTarget = string.Empty;
-                                this.pendingStatus = "Contact saved";
-                                this.RefreshSnapshot();
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            this.pendingStatus = this.SanitizeUserFacingError(ex.Message);
-                        }
+                        var conversation = this.client.StartDirectConversationAsync(this.configuration.AuthToken, new StartDirectConversationRequest(this.contactAddTarget)).GetAwaiter().GetResult();
+                        this.BeginConversationCall(conversation.Id, false);
+                    }
+                    catch (Exception ex)
+                    {
+                        this.pendingStatus = this.SanitizeUserFacingError(ex.Message);
+                    }
+                }
+
+                ImGui.SameLine(0f, actionSpacing);
+                if (this.DrawPhonePillButton("Message##searched-contact", new Vector2(actionWidth, this.Scale(32f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken) && !string.IsNullOrWhiteSpace(this.contactAddTarget))
+                {
+                    try
+                    {
+                        var conversation = this.client.StartDirectConversationAsync(this.configuration.AuthToken, new StartDirectConversationRequest(this.contactAddTarget)).GetAwaiter().GetResult();
+                        this.selectedConversationId = conversation.Id;
+                        this.selectedConversationMessages = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
+                        this.selectedConversationDetail = this.client.GetConversationDetailAsync(this.configuration.AuthToken, conversation.Id).GetAwaiter().GetResult();
+                        this.showHomeScreen = false;
+                        this.activeTab = PhoneTab.Messages;
+                        this.scrollMessagesToBottom = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        this.pendingStatus = this.SanitizeUserFacingError(ex.Message);
                     }
                 }
             }
@@ -1704,14 +2006,24 @@ public sealed class PhoneWindow : Window
         ImGui.TextDisabled("Contacts");
         if (this.state.Contacts.Count == 0)
         {
-            ImGui.TextDisabled("No contacts saved");
+            ImGui.TextDisabled("No contacts available");
             return;
         }
 
+        var contactFilter = this.contactAddTarget.Trim();
         var sortedContacts = this.state.Contacts
+            .Where(item => contactFilter.Length == 0
+                || item.DisplayName.Contains(contactFilter, StringComparison.OrdinalIgnoreCase)
+                || item.PhoneNumber.Contains(contactFilter, StringComparison.OrdinalIgnoreCase))
             .OrderBy(item => GetContactSortKey(item.DisplayName), StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.PhoneNumber, StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+        if (sortedContacts.Count == 0)
+        {
+            ImGui.TextDisabled("No matching contacts");
+            return;
+        }
 
         for (var index = 0; index < sortedContacts.Count; index++)
         {
@@ -1724,7 +2036,7 @@ public sealed class PhoneWindow : Window
             }
 
             var actionSpacing = this.Scale(8f);
-            var buttonWidth = Math.Max(this.Scale(86f), (ImGui.GetContentRegionAvail().X - (actionSpacing * 2f)) / 3f);
+            var buttonWidth = Math.Max(this.Scale(86f), (ImGui.GetContentRegionAvail().X - actionSpacing) * 0.5f);
             if (this.DrawPhonePillButton($"Call##{contact.Id}", new Vector2(buttonWidth, this.Scale(32f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
             {
                 try
@@ -1750,27 +2062,6 @@ public sealed class PhoneWindow : Window
                     this.showHomeScreen = false;
                     this.activeTab = PhoneTab.Messages;
                     this.scrollMessagesToBottom = true;
-                }
-                catch (Exception ex)
-                {
-                    this.pendingStatus = this.SanitizeUserFacingError(ex.Message);
-                }
-            }
-
-            ImGui.SameLine(0f, actionSpacing);
-            if (this.DrawPhonePillButton($"Remove##{contact.Id}", new Vector2(buttonWidth, this.Scale(32f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
-            {
-                try
-                {
-                    this.pendingContactsScrollRestoreY = ImGui.GetScrollY();
-                    var isFriend = this.state.Friends.Any(item => item.FriendAccountId == contact.Id);
-                    var removed = isFriend
-                        ? this.client.RemoveFriendAsync(this.configuration.AuthToken, contact.Id).GetAwaiter().GetResult()
-                        : this.client.RemoveContactAsync(this.configuration.AuthToken, contact.Id).GetAwaiter().GetResult();
-                    this.pendingStatus = removed
-                        ? isFriend ? "Friend unpaired" : "Contact removed"
-                        : isFriend ? "That friendship has already been removed" : "That contact has already been removed";
-                    this.RefreshSnapshot();
                 }
                 catch (Exception ex)
                 {
@@ -1941,11 +2232,11 @@ public sealed class PhoneWindow : Window
                     {
                         try
                         {
-                            this.client.CreateFriendRequestAsync(this.configuration.AuthToken, new FriendRequestCreateRequest(this.friendRequestTarget, string.IsNullOrWhiteSpace(this.friendRequestMessage) ? null : this.friendRequestMessage)).GetAwaiter().GetResult();
+                            var created = this.client.CreateFriendRequestAsync(this.configuration.AuthToken, new FriendRequestCreateRequest(this.friendRequestTarget, string.IsNullOrWhiteSpace(this.friendRequestMessage) ? null : this.friendRequestMessage)).GetAwaiter().GetResult();
                             this.friendRequestTarget = string.Empty;
                             this.friendRequestMessage = string.Empty;
                             this.friendRequestMessageControlVersion++;
-                            this.pendingStatus = "Friend request sent";
+                            this.pendingStatus = created.Status == FriendRequestStatus.Accepted ? "Friend paired" : "Friend request sent";
                             this.RefreshSnapshot();
                         }
                         catch (Exception ex)
@@ -2334,6 +2625,25 @@ public sealed class PhoneWindow : Window
             this.SaveConfiguration();
         }
         this.DrawNotificationAnchorPicker();
+
+        ImGui.Separator();
+        ImGui.TextDisabled("GIFs");
+        ImGui.SetNextItemWidth(-1f);
+        var klipyApiKey = this.configuration.KlipyApiKey;
+        if (ImGui.InputTextWithHint("##klipy-api-key", "KLIPY API key", ref klipyApiKey, 256, ImGuiInputTextFlags.Password))
+        {
+            this.configuration.KlipyApiKey = klipyApiKey.Trim();
+        }
+        if (ImGui.IsItemDeactivatedAfterEdit())
+        {
+            this.SaveConfiguration();
+        }
+        if (this.DrawPhonePillButton("Get KLIPY API Key", new Vector2(-1f, this.Scale(30f))))
+        {
+            this.pendingExternalUrl = KlipyCreateAppUrl;
+            this.showLinkWarningModal = true;
+        }
+        ImGui.TextDisabled("Used only for GIF search. Direct .gif links do not require a provider key.");
 
         ImGui.Separator();
         ImGui.TextDisabled("Writing");
@@ -4497,6 +4807,93 @@ public sealed class PhoneWindow : Window
         }
     }
 
+    private void DrawGifPicker(Guid conversationId)
+    {
+        if (this.openGifPicker)
+        {
+            this.openGifPicker = false;
+            ImGui.OpenPopup("KLIPY GIF Picker");
+            var apiKey = this.GetKlipyApiKey();
+            if (!string.IsNullOrWhiteSpace(apiKey) && this.pendingGifSearchTask is null && this.gifSearchResults.Count == 0)
+            {
+                this.pendingGifSearchTask = this.giphyClient.GetTrendingAsync(apiKey, this.configuration.GiphyRating, 24);
+            }
+        }
+
+        ImGui.SetNextWindowSize(new Vector2(this.Scale(330f), this.Scale(430f)), ImGuiCond.Appearing);
+        using var popup = ImRaii.PopupModal("KLIPY GIF Picker", ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+        if (!popup.Success)
+        {
+            return;
+        }
+
+        var key = this.GetKlipyApiKey();
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            ImGui.TextWrapped("Add a KLIPY API key in Settings before searching GIFs.");
+            if (this.DrawPhonePillButton("Get KLIPY Key", new Vector2(-1f, this.Scale(32f))))
+            {
+                this.pendingExternalUrl = KlipyCreateAppUrl;
+                this.showLinkWarningModal = true;
+            }
+            if (this.DrawPhonePillButton("Close", new Vector2(-1f, this.Scale(32f))))
+            {
+                ImGui.CloseCurrentPopup();
+            }
+            return;
+        }
+
+        ImGui.SetNextItemWidth(-1f);
+        var searchChanged = ImGui.InputTextWithHint("##klipy-search", "Search KLIPY", ref this.gifSearchQuery, 80);
+        var submitSearch = (searchChanged && ImGui.IsKeyPressed(ImGuiKey.Enter)) || this.DrawPhonePillButton("Search", new Vector2(-1f, this.Scale(30f)));
+        if (submitSearch && !string.IsNullOrWhiteSpace(this.gifSearchQuery) && this.pendingGifSearchTask is null)
+        {
+            this.pendingGifSearchTask = this.giphyClient.SearchAsync(key, this.gifSearchQuery.Trim(), this.configuration.GiphyRating, 24);
+        }
+
+        if (this.pendingGifSearchTask is { IsCompleted: true })
+        {
+            try
+            {
+                this.gifSearchResults = this.pendingGifSearchTask.GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                this.pendingStatus = $"KLIPY search failed: {this.SanitizeUserFacingError(ex.Message)}";
+                this.gifSearchResults = [];
+            }
+            this.pendingGifSearchTask = null;
+        }
+
+        ImGui.TextDisabled(this.pendingGifSearchTask is null ? "Powered by KLIPY" : "Loading KLIPY...");
+        using var results = ImRaii.Child("klipy-results", new Vector2(-1f, this.Scale(300f)), true);
+        if (results.Success)
+        {
+            foreach (var gif in this.gifSearchResults)
+            {
+                var title = string.IsNullOrWhiteSpace(gif.Title) ? "GIF" : gif.Title;
+                if (this.DrawPhonePillButton($"{title}##klipy-{gif.GifId}", new Vector2(-1f, this.Scale(34f))))
+                {
+                    this.SendGif(conversationId, gif);
+                    ImGui.CloseCurrentPopup();
+                    break;
+                }
+            }
+        }
+
+        if (this.DrawPhonePillButton("Close", new Vector2(-1f, this.Scale(30f))))
+        {
+            ImGui.CloseCurrentPopup();
+        }
+    }
+
+    private string GetKlipyApiKey()
+    {
+        return string.IsNullOrWhiteSpace(this.configuration.KlipyApiKey)
+            ? this.configuration.GiphyApiKey
+            : this.configuration.KlipyApiKey;
+    }
+
     private bool DrawEditableText(string label, string value, Action<string> setter, int maxLength)
     {
         ImGui.TextDisabled(label);
@@ -5195,6 +5592,7 @@ public sealed class PhoneWindow : Window
             if (!string.IsNullOrWhiteSpace(this.configuration.AuthToken))
             {
                 this.showHomeScreen = true;
+                this.refreshStaffDashboardOnOpen = true;
                 this.activeTab = PhoneTab.Messages;
                 if (this.pendingSnapshotTask is not { IsCompleted: false } && this.HasHydratedAuthenticatedProfile())
                 {
@@ -5798,6 +6196,19 @@ public sealed class PhoneWindow : Window
         {
             ImGui.TextDisabled("Staff access only.");
             return;
+        }
+
+        if (this.refreshStaffDashboardOnOpen)
+        {
+            this.refreshStaffDashboardOnOpen = false;
+            try
+            {
+                this.RefreshStaffDashboard();
+            }
+            catch (Exception ex)
+            {
+                this.pendingStatus = $"Staff refresh failed: {this.SanitizeUserFacingError(ex.Message)}";
+            }
         }
 
         var dashboard = this.adminDashboard;
@@ -6944,6 +7355,7 @@ public sealed class PhoneWindow : Window
             }
             else if (result.Snapshot is not null)
             {
+                this.ProcessFriendNotifications(result.Snapshot);
                 this.state.ApplySnapshot(result.Snapshot);
                 this.HandleServerAnnouncement(this.state.ActiveAnnouncement);
                 if (result.UpdatedProfile is not null)
@@ -7036,6 +7448,8 @@ public sealed class PhoneWindow : Window
         this.state.Conversations = seeded.Conversations;
         this.state.RecentCalls = seeded.RecentCalls;
         this.state.FriendRequests = seeded.FriendRequests;
+        this.friendNotificationStateInitialized = false;
+        this.knownIncomingFriendRequestIds.Clear();
         this.state.Notifications = seeded.Notifications;
         this.state.VisibleReports = seeded.VisibleReports;
         this.state.VisibleAuditLogs = seeded.VisibleAuditLogs;
@@ -7056,6 +7470,43 @@ public sealed class PhoneWindow : Window
             this.loginUsername = this.configuration.Username;
         }
         this.SaveConfiguration();
+    }
+
+    private void ProcessFriendNotifications(PhoneSnapshot snapshot)
+    {
+        var incomingRequests = snapshot.FriendRequests
+            .Where(item => item.Status == FriendRequestStatus.Pending && item.IsIncoming)
+            .ToList();
+
+        if (!this.friendNotificationStateInitialized)
+        {
+            this.knownIncomingFriendRequestIds = incomingRequests.Select(item => item.Id).ToHashSet();
+            this.friendNotificationStateInitialized = true;
+            return;
+        }
+
+        var friendsAppOpen = this.IsOpen && !this.showHomeScreen && this.activeTab == PhoneTab.Friends;
+        if (!friendsAppOpen)
+        {
+            foreach (var request in incomingRequests.Where(item => !this.knownIncomingFriendRequestIds.Contains(item.Id)))
+            {
+                this.state.Notifications.Add(new PhoneNotification(Guid.NewGuid(), "Friend Request", $"{request.DisplayName} sent you a friend request", PhoneTab.Friends, null, false));
+            }
+
+            var previousOutgoing = this.state.FriendRequests
+                .Where(item => item.Status == FriendRequestStatus.Pending && !item.IsIncoming)
+                .ToList();
+            foreach (var request in previousOutgoing)
+            {
+                var accepted = snapshot.Friends.Any(friend => string.Equals(friend.FriendPhoneNumber, request.PhoneNumber, StringComparison.OrdinalIgnoreCase));
+                if (accepted)
+                {
+                    this.state.Notifications.Add(new PhoneNotification(Guid.NewGuid(), "Friend Request Accepted", $"{request.DisplayName} accepted your friend request", PhoneTab.Friends, null, false));
+                }
+            }
+        }
+
+        this.knownIncomingFriendRequestIds = incomingRequests.Select(item => item.Id).ToHashSet();
     }
 
     private async Task<PostAuthSnapshotResult> LoadPostAuthSnapshotAsync(string authToken, GameIdentityRecord? identity)

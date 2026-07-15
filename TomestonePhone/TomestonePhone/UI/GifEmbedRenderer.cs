@@ -94,8 +94,6 @@ public sealed class GifEmbedRenderer : IDisposable
             request.Headers.UserAgent.ParseAdd(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             );
-            request.Headers.Referrer = new Uri("https://giphy.com/");
-
             using var response = await HttpClient.SendAsync(request).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
@@ -286,6 +284,5 @@ public sealed class GifEmbedRenderer : IDisposable
         }
     }
 }
-
 
 

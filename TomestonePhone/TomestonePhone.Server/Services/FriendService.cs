@@ -5,6 +5,7 @@ namespace TomestonePhone.Server.Services;
 
 public sealed class FriendService : IFriendService
 {
+    private static readonly TimeSpan RequestLifetime = TimeSpan.FromDays(7);
     private readonly IPhoneRepository repository;
 
     public FriendService(IPhoneRepository repository)
@@ -29,9 +30,22 @@ public sealed class FriendService : IFriendService
                 throw new InvalidOperationException("You are already friends.");
             }
 
+            RemoveExpiredRequests(state);
+
+            var reciprocalRequest = state.FriendRequests.SingleOrDefault(item =>
+                item.SenderAccountId == target.Id
+                && item.RecipientAccountId == senderAccountId
+                && string.Equals(item.Status, FriendRequestStatus.Pending.ToString(), StringComparison.OrdinalIgnoreCase));
+            if (reciprocalRequest is not null)
+            {
+                CreateFriendship(state, sender, target);
+                RemoveRequestsBetween(state, senderAccountId, target.Id);
+                return new FriendRequestRecord(reciprocalRequest.Id, AccountLabelFormatter.GetDisplayName(target), target.PhoneNumber, FriendRequestStatus.Accepted, false);
+            }
+
             if (state.FriendRequests.Any(item =>
-                    ((item.SenderAccountId == senderAccountId && item.RecipientAccountId == target.Id)
-                    || (item.SenderAccountId == target.Id && item.RecipientAccountId == senderAccountId))
+                    item.SenderAccountId == senderAccountId
+                    && item.RecipientAccountId == target.Id
                     && string.Equals(item.Status, FriendRequestStatus.Pending.ToString(), StringComparison.OrdinalIgnoreCase)))
             {
                 throw new InvalidOperationException("A pending friend request already exists.");
@@ -56,8 +70,9 @@ public sealed class FriendService : IFriendService
 
     public Task<IReadOnlyList<FriendRequestRecord>> GetRequestsAsync(Guid accountId, CancellationToken cancellationToken = default)
     {
-        return this.repository.ReadAsync<IReadOnlyList<FriendRequestRecord>>(state =>
+        return this.repository.WriteAsync<IReadOnlyList<FriendRequestRecord>>(state =>
         {
+            RemoveExpiredRequests(state);
             return state.FriendRequests
                 .Where(item => string.Equals(item.Status, FriendRequestStatus.Pending.ToString(), StringComparison.OrdinalIgnoreCase))
                 .Where(item => item.RecipientAccountId == accountId || item.SenderAccountId == accountId)
@@ -103,19 +118,7 @@ public sealed class FriendService : IFriendService
             if (request.Accept && sender is not null)
             {
                 var recipient = state.Accounts.Single(item => item.Id == accountId);
-                if (state.Friendships.All(item => !MatchesFriendship(item, sender.Id, recipient.Id)))
-                {
-                    state.Friendships.Add(new PersistedFriendship
-                    {
-                        Id = Guid.NewGuid(),
-                        AccountAId = sender.Id,
-                        AccountBId = recipient.Id,
-                        CreatedAtUtc = DateTimeOffset.UtcNow,
-                    });
-                }
-
-                UpsertFriendContact(recipient, sender);
-                UpsertFriendContact(sender, recipient);
+                CreateFriendship(state, sender, recipient);
             }
 
             RemoveRequestsBetween(state, record.SenderAccountId, record.RecipientAccountId);
@@ -154,6 +157,31 @@ public sealed class FriendService : IFriendService
             DisplayName = AccountLabelFormatter.GetDisplayName(friend),
             Note = string.Empty,
         };
+    }
+
+    private static void CreateFriendship(PersistedAppState state, PersistedAccount first, PersistedAccount second)
+    {
+        if (state.Friendships.All(item => !MatchesFriendship(item, first.Id, second.Id)))
+        {
+            state.Friendships.Add(new PersistedFriendship
+            {
+                Id = Guid.NewGuid(),
+                AccountAId = first.Id,
+                AccountBId = second.Id,
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+            });
+        }
+
+        UpsertFriendContact(first, second);
+        UpsertFriendContact(second, first);
+    }
+
+    private static void RemoveExpiredRequests(PersistedAppState state)
+    {
+        var cutoff = DateTimeOffset.UtcNow - RequestLifetime;
+        state.FriendRequests.RemoveAll(item =>
+            string.Equals(item.Status, FriendRequestStatus.Pending.ToString(), StringComparison.OrdinalIgnoreCase)
+            && item.CreatedAtUtc <= cutoff);
     }
 
     private static void RemoveRequestsBetween(PersistedAppState state, Guid a, Guid b)

@@ -7,7 +7,7 @@ public sealed class GiphyClient : IDisposable
 {
     private readonly HttpClient httpClient = new()
     {
-        BaseAddress = new Uri("https://api.giphy.com/", UriKind.Absolute),
+        BaseAddress = new Uri("https://api.klipy.com/", UriKind.Absolute),
     };
 
     public async Task<IReadOnlyList<GiphyGifResult>> SearchAsync(string apiKey, string query, string rating, int limit, CancellationToken cancellationToken = default)
@@ -17,7 +17,7 @@ public sealed class GiphyClient : IDisposable
             return [];
         }
 
-        var path = $"v1/gifs/search?api_key={Uri.EscapeDataString(apiKey)}&q={Uri.EscapeDataString(query)}&limit={limit}&offset=0&rating={Uri.EscapeDataString(rating)}&bundle=messaging_non_clips";
+        var path = $"v2/search?key={Uri.EscapeDataString(apiKey)}&q={Uri.EscapeDataString(query)}&limit={limit}&contentfilter={MapContentFilter(rating)}&media_filter=gif,tinygif,mediumgif,nanogif,preview";
         return await this.GetResultsAsync(path, cancellationToken);
     }
 
@@ -28,7 +28,7 @@ public sealed class GiphyClient : IDisposable
             return [];
         }
 
-        var path = $"v1/gifs/trending?api_key={Uri.EscapeDataString(apiKey)}&limit={limit}&rating={Uri.EscapeDataString(rating)}&bundle=messaging_non_clips";
+        var path = $"v2/featured?key={Uri.EscapeDataString(apiKey)}&limit={limit}&contentfilter={MapContentFilter(rating)}&media_filter=gif,tinygif,mediumgif,nanogif,preview";
         return await this.GetResultsAsync(path, cancellationToken);
     }
 
@@ -46,7 +46,7 @@ public sealed class GiphyClient : IDisposable
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
         var results = new List<GiphyGifResult>();
 
-        if (!document.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+        if (!document.RootElement.TryGetProperty("results", out var data) || data.ValueKind != JsonValueKind.Array)
         {
             return results;
         }
@@ -54,13 +54,15 @@ public sealed class GiphyClient : IDisposable
         foreach (var item in data.EnumerateArray())
         {
             var id = item.TryGetProperty("id", out var idProperty) ? idProperty.GetString() ?? string.Empty : string.Empty;
-            var title = item.TryGetProperty("title", out var titleProperty) ? titleProperty.GetString() ?? "GIF" : "GIF";
-            var pageUrl = item.TryGetProperty("url", out var pageProperty) ? pageProperty.GetString() ?? string.Empty : string.Empty;
-            var gifUrl = TryGetImageUrl(item, "original")
-                ?? TryGetImageUrl(item, "downsized")
+            var title = item.TryGetProperty("content_description", out var descriptionProperty)
+                ? descriptionProperty.GetString() ?? "GIF"
+                : item.TryGetProperty("title", out var titleProperty) ? titleProperty.GetString() ?? "GIF" : "GIF";
+            var pageUrl = item.TryGetProperty("itemurl", out var pageProperty) ? pageProperty.GetString() ?? string.Empty : string.Empty;
+            var gifUrl = TryGetImageUrl(item, "gif")
+                ?? TryGetImageUrl(item, "mediumgif")
                 ?? string.Empty;
-            var previewUrl = TryGetImageUrl(item, "fixed_width_small_still")
-                ?? TryGetImageUrl(item, "fixed_width_still")
+            var previewUrl = TryGetImageUrl(item, "tinygif")
+                ?? TryGetImageUrl(item, "preview")
                 ?? gifUrl;
 
             if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(gifUrl))
@@ -76,7 +78,7 @@ public sealed class GiphyClient : IDisposable
 
     private static string? TryGetImageUrl(JsonElement item, string imageKey)
     {
-        if (!item.TryGetProperty("images", out var images)
+        if (!item.TryGetProperty("media_formats", out var images)
             || !images.TryGetProperty(imageKey, out var image)
             || !image.TryGetProperty("url", out var urlProperty))
         {
@@ -84,5 +86,16 @@ public sealed class GiphyClient : IDisposable
         }
 
         return urlProperty.GetString();
+    }
+
+    private static string MapContentFilter(string rating)
+    {
+        return rating.Trim().ToLowerInvariant() switch
+        {
+            "g" => "high",
+            "pg" => "medium",
+            "pg-13" => "low",
+            _ => "off",
+        };
     }
 }
