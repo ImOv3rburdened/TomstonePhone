@@ -44,6 +44,8 @@ public sealed class Configuration : IPluginConfiguration
 
     public float VoiceOutputVolume { get; set; } = 1f;
 
+    public int TextSize { get; set; } = 1;
+
     public bool EnableSpellCheck { get; set; } = true;
 
     public string? RememberedUsername { get; set; }

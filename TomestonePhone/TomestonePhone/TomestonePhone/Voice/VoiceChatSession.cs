@@ -10,6 +10,7 @@ namespace TomestonePhone.Voice;
 
 public sealed class VoiceChatSession : IDisposable
 {
+    private const float PlaybackBoost = 1.5f;
     private readonly SemaphoreSlim sendLock = new(1, 1);
     private readonly SemaphoreSlim lifecycleLock = new(1, 1);
     private readonly object syncRoot = new();
@@ -103,7 +104,7 @@ public sealed class VoiceChatSession : IDisposable
                 };
                 this.playbackVolumeProvider = new VolumeSampleProvider(this.mixer)
                 {
-                    Volume = this.outputVolume,
+                    Volume = GetPlaybackVolume(this.outputVolume),
                 };
 
                 this.waveOut = new WaveOutEvent
@@ -161,7 +162,7 @@ public sealed class VoiceChatSession : IDisposable
         {
             if (this.playbackVolumeProvider is not null)
             {
-                this.playbackVolumeProvider.Volume = this.outputVolume;
+                this.playbackVolumeProvider.Volume = GetPlaybackVolume(this.outputVolume);
             }
         }
     }
@@ -492,6 +493,11 @@ public sealed class VoiceChatSession : IDisposable
     private static float ClampVolume(float value)
     {
         return Math.Clamp(value, 0.25f, 3f);
+    }
+
+    private static float GetPlaybackVolume(float value)
+    {
+        return Math.Clamp(value * PlaybackBoost, 0.25f, 3f);
     }
 
     private void OnRecordingStopped(object? sender, StoppedEventArgs args)

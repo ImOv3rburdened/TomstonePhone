@@ -188,7 +188,7 @@ public sealed class CallService : ICallService
             StartedUtc = startedUtc,
             EndedUtc = null,
             DurationSeconds = 0,
-            Missed = false,
+            Missed = !(request.IsGroup || conversation.IsGroup),
             MissedAcknowledged = false,
             VoiceProvider = voiceSession?.Provider ?? string.Empty,
             VoiceHost = voiceSession?.Host ?? string.Empty,
@@ -276,7 +276,7 @@ public sealed class CallService : ICallService
 
         call.EndedUtc = DateTimeOffset.UtcNow;
         call.DurationSeconds = Math.Max(call.DurationSeconds, (int)Math.Max(0, Math.Round((call.EndedUtc.Value - session.StartedUtc).TotalSeconds)));
-        call.Missed = !session.IsGroup && (session.ParticipantAccountIds?.Count ?? 0) <= 1;
+        call.Missed = !session.IsGroup && call.Missed && (session.ParticipantAccountIds?.Count ?? 0) <= 1;
         if (session.IsGroup)
         {
             this.AddSystemCallMessage(state, conversation, session.StartedByAccountId, ChatMessageKind.CallEnded, $"Call ended - {FormatDuration(call.DurationSeconds)}", call.Id, call.DurationSeconds);
@@ -431,5 +431,4 @@ public sealed class CallService : ICallService
         return string.IsNullOrWhiteSpace(conversation.Name) ? "Direct Call" : conversation.Name;
     }
 }
-
 

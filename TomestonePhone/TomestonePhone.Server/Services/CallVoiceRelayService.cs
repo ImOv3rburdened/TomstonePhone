@@ -6,11 +6,13 @@ namespace TomestonePhone.Server.Services;
 public sealed class CallVoiceRelayService
 {
     private readonly IPhoneRepository repository;
+    private readonly ServerMetricsService metrics;
     private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, ConnectedPeer>> sessions = new();
 
-    public CallVoiceRelayService(IPhoneRepository repository)
+    public CallVoiceRelayService(IPhoneRepository repository, ServerMetricsService metrics)
     {
         this.repository = repository;
+        this.metrics = metrics;
     }
 
     public Task<bool> CanJoinSessionAsync(Guid sessionId, Guid accountId, CancellationToken cancellationToken = default)
@@ -33,6 +35,7 @@ public sealed class CallVoiceRelayService
         }
 
         peers[accountId] = peer;
+        this.metrics.VoiceConnected();
         var receiveBuffer = new byte[8 * 1024];
 
         try
@@ -59,6 +62,7 @@ public sealed class CallVoiceRelayService
                 while (!result.EndOfMessage);
 
                 var payload = packetBuffer.ToArray();
+                this.metrics.RecordBytes(payload.Length);
                 if (payload.Length == 0)
                 {
                     continue;
@@ -72,11 +76,13 @@ public sealed class CallVoiceRelayService
                 foreach (var otherPeer in peers.Values.Where(item => item.AccountId != accountId))
                 {
                     await otherPeer.SendAsync(outgoing, cancellationToken).ConfigureAwait(false);
+                    this.metrics.RecordBytes(outgoing.Length);
                 }
             }
         }
         finally
         {
+            this.metrics.VoiceDisconnected();
             peers.TryRemove(accountId, out _);
             if (peers.IsEmpty)
             {

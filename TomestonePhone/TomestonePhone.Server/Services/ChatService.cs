@@ -132,6 +132,7 @@ public sealed class ChatService : IChatService
                 ?? throw new InvalidOperationException("Conversation unavailable.");
             var actorRole = ParseRole(actorMember.Role);
             var isStaffActor = SystemConversationCoordinator.IsStaffRole(actor.Role);
+            var isServerOwner = actor.Role == nameof(AccountRole.Owner);
             var now = DateTimeOffset.UtcNow;
 
             if (conversation.LinkedSupportTicketId is not null && !isStaffActor)
@@ -300,7 +301,9 @@ public sealed class ChatService : IChatService
                     conversation.IsReadOnly = true;
                     conversation.ClosedAtUtc ??= now;
                     break;
-                case ChatModerationAction.DeleteConversation when conversation.LinkedSupportTicketId is null && actorRole == GroupMemberRole.Owner:
+                case ChatModerationAction.DeleteConversation when conversation.LinkedSupportTicketId is null
+                    && conversation.Kind == SystemConversationCoordinator.StandardConversationKind
+                    && (actorRole == GroupMemberRole.Owner || isServerOwner):
                     conversation.IsReadOnly = true;
                     conversation.ClosedAtUtc ??= now;
                     conversation.DeletedAtUtc ??= now;
@@ -317,6 +320,17 @@ public sealed class ChatService : IChatService
                     }
 
                     actorMember.RemovedAtUtc ??= now;
+                    actorMember.HiddenAtUtc ??= now;
+                    break;
+                case ChatModerationAction.HideConversation when conversation.LinkedSupportTicketId is not null && isStaffActor:
+                    if (!conversation.IsReadOnly)
+                    {
+                        throw new InvalidOperationException("Close the support ticket before removing it from your chat list.");
+                    }
+
+                    // Closed support records must remain available to the server
+                    // and other staff. This is a per-staff-member list removal,
+                    // not destructive deletion of the ticket or its messages.
                     actorMember.HiddenAtUtc ??= now;
                     break;
                 case ChatModerationAction.HideConversation when !conversation.IsGroup:
@@ -661,6 +675,12 @@ public sealed class ChatService : IChatService
             .Where(item => IsMessageVisibleToViewer(state, conversation, item, accountId))
             .OrderByDescending(item => item.SentAtUtc)
             .FirstOrDefault();
+        var linkedTicket = conversation.LinkedSupportTicketId is { } ticketId
+            ? state.SupportTickets.SingleOrDefault(item => item.Id == ticketId)
+            : null;
+        var lastActivityUtc = last?.SentAtUtc
+            ?? linkedTicket?.CreatedAtUtc
+            ?? conversation.Members.Select(item => item.JoinedAtUtc).DefaultIfEmpty(DateTimeOffset.UtcNow).Min();
         var displayName = conversation.Name;
 
         if (!conversation.IsGroup)
@@ -674,8 +694,8 @@ public sealed class ChatService : IChatService
             conversation.Id,
             displayName,
             conversation.IsGroup,
-            GetMessagePreview(last) ?? "No messages yet.",
-            last?.SentAtUtc ?? DateTimeOffset.MinValue,
+            GetMessagePreview(last) ?? (linkedTicket is null ? "No messages yet." : "Support ticket opened."),
+            lastActivityUtc,
             0,
             ConversationMembershipPolicy.CanInteractWithConversation(conversation, accountId),
             ConversationMembershipPolicy.IsActiveMember(viewerMember) && ParseRole(viewerMember.Role) == GroupMemberRole.Owner,
@@ -764,7 +784,4 @@ public sealed class ChatService : IChatService
         }
     }
 }
-
-
-
 

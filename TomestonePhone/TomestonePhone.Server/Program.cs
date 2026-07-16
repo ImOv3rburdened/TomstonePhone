@@ -28,6 +28,8 @@ builder.Services.AddSingleton<IFriendService, FriendService>();
 builder.Services.AddSingleton<IReportService, ReportService>();
 builder.Services.AddSingleton<ISupportTicketService, SupportTicketService>();
 builder.Services.AddSingleton<ICloudflareModerationService, CloudflareModerationService>();
+builder.Services.AddSingleton<ServerMetricsService>();
+builder.Services.AddRazorPages();
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("TomestonePhone", policy =>
@@ -44,6 +46,23 @@ var app = builder.Build();
 await app.Services.GetRequiredService<IPhoneRepository>().InitializeAsync();
 app.UseCors("TomestonePhone");
 app.UseWebSockets();
+app.UseStaticFiles();
+app.Use(async (context, next) =>
+{
+    var metrics = context.RequestServices.GetRequiredService<ServerMetricsService>();
+    metrics.RecordBytes(context.Request.ContentLength ?? 0);
+    var originalBody = context.Response.Body;
+    await using var countingBody = new ThroughputCountingStream(originalBody, metrics);
+    context.Response.Body = countingBody;
+    try
+    {
+        await next();
+    }
+    finally
+    {
+        context.Response.Body = originalBody;
+    }
+});
 app.Use(async (context, next) =>
 {
     var accounts = context.RequestServices.GetRequiredService<IAccountService>();
@@ -61,7 +80,8 @@ app.Use(async (context, next) =>
 app.Use(async (context, next) =>
 {
     if (!context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase)
-        || context.Request.Path.StartsWithSegments("/api/client/version-policy", StringComparison.OrdinalIgnoreCase))
+        || context.Request.Path.StartsWithSegments("/api/client/version-policy", StringComparison.OrdinalIgnoreCase)
+        || context.Request.Path.StartsWithSegments("/api/public", StringComparison.OrdinalIgnoreCase))
     {
         await next();
         return;
@@ -103,6 +123,46 @@ app.MapGet("/api/client/version-policy", (IConfiguration configuration) =>
     var recommendedMessage = configuration["ClientVersionPolicy:RecommendedMessage"] ?? "A newer TomestonePhone version is available. Please update soon because older versions may stop working.";
     return Results.Ok(new { minimumVersion, recommendedVersion, updateMessage, recommendedMessage });
 });
+
+app.MapGet("/api/public/status", async (IPhoneRepository repository, ServerMetricsService metrics, IOptions<VoiceOptions> voiceOptions, CancellationToken cancellationToken) =>
+{
+    var databaseOperational = true;
+    var onlineMembers = 0;
+    var totalMembers = 0;
+    try
+    {
+        var counts = await repository.ReadAsync(state => new
+        {
+            Online = state.Accounts.Count(account => account.LastHeartbeatAtUtc is { } heartbeat && DateTimeOffset.UtcNow - heartbeat <= TimeSpan.FromSeconds(90)),
+            Total = state.Accounts.Count,
+        }, cancellationToken);
+        onlineMembers = counts.Online;
+        totalMembers = counts.Total;
+    }
+    catch
+    {
+        databaseOperational = false;
+    }
+
+    var voiceEnabled = voiceOptions.Value.Enabled;
+    return Results.Ok(new
+    {
+        generatedAtUtc = DateTimeOffset.UtcNow,
+        startedAtUtc = metrics.StartedAtUtc,
+        totalBytesTransferred = metrics.TotalBytesTransferred,
+        onlineMembers,
+        totalMembers,
+        activeVoiceConnections = metrics.ActiveVoiceConnections,
+        services = new
+        {
+            api = true,
+            database = databaseOperational,
+            realtime = true,
+            voice = voiceEnabled,
+        },
+        allOperational = databaseOperational && voiceEnabled,
+    });
+}).AllowAnonymous();
 
 app.MapPost("/api/auth/register", async (HttpContext context, RegisterRequest request, IAccountService accounts, CancellationToken cancellationToken) =>
 {
@@ -784,6 +844,7 @@ app.MapPost("/api/admin/reset-password", async (HttpContext context, AdminPasswo
 });
 
 app.MapHub<PhoneHub>("/hubs/phone");
+app.MapRazorPages();
 
 app.Run();
 
@@ -838,8 +899,6 @@ static bool IsClientVersionAllowed(string? clientVersion, string? minimumVersion
 
     return current >= minimum;
 }
-
-
 
 
 

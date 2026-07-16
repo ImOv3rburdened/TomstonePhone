@@ -1,23 +1,21 @@
-const state = {
-  token: "",
-  profile: null,
-};
-
-const profileSummary = document.getElementById("profileSummary");
-const authStatus = document.getElementById("authStatus");
-const termsText = document.getElementById("termsText");
-const privacyText = document.getElementById("privacyText");
+const history = Array(30).fill(0);
+let previousBytes = null;
+let previousSampleTime = null;
+let authToken = "";
+const clientVersion = "0.1.15.1";
 const legalTermsVersion = "2026-03-20";
 const privacyPolicyVersion = "2026-05-08";
 
+const $ = (id) => document.getElementById(id);
+
 const legalTermsBody = `TomestonePhone User Agreement and Liability Notice
 
-1. You are responsible for the content you send or link through the service.
-2. Unlawful, exploitative, abusive, harassing, fraudulent, or illegal sexual material is prohibited.
-3. Moderation, review, logging, retention, and enforcement may occur for safety and legal compliance.
-4. Removed user-facing content may still be retained for evidentiary and legal purposes.
-5. Access may be restricted or terminated for policy or legal risk.
-6. To the maximum extent permitted by law, use is at your own risk and no warranty is provided.
+1. You are responsible for messages, names, notes, reports, linked media, and any other content you submit through this service.
+2. You must not use the service for unlawful, exploitative, abusive, harassing, fraudulent, infringing, or sexually illegal conduct or material.
+3. You consent to moderation, logging, retention, review, account restrictions, and disclosure where reasonably necessary for abuse prevention, legal compliance, enforcement, or safety response.
+4. User-facing removal does not require backend deletion. Records may be retained for evidentiary, operational, and legal purposes.
+5. The operator may suspend, restrict, report, or terminate access for policy violations, security events, or legal risk.
+6. This software is provided without warranty. To the maximum extent permitted by law, you assume the risk of use and agree not to hold the operator liable for user-generated conduct except where liability cannot legally be waived.
 7. If you do not agree, do not register or use the service.`;
 
 const privacyPolicyBody = `TomestonePhone Privacy Policy
@@ -30,80 +28,168 @@ const privacyPolicyBody = `TomestonePhone Privacy Policy
 6. We collect and retain IP addresses and related access data for account security, abuse prevention, moderation, bans, unlawful-content investigations, and legal compliance.
 7. The plugin does not collect analytics or telemetry. If analytics are added later, they will require explicit opt-in before collection.
 8. The service does not host user-uploaded chat images. If you share external links, related message and moderation records may still be reviewed and retained.
-9. Records may be retained even when user-facing access changes.
-10. Relevant data may be disclosed when required for safety response, legal process, or reporting obligations.
-11. If you do not agree, do not register or use the service.`;
+9. We may preserve records, including logs and moderation evidence, even if user-facing access is restricted or content visibility changes.
+10. We may disclose relevant information when required for safety response, legal process, or reporting obligations.
+11. You may request support, but deletion requests may be limited where retention is necessary for security, legal obligations, or evidentiary purposes.
+12. Continued use of the service constitutes ongoing acknowledgement of these practices.`;
 
-termsText.textContent = legalTermsBody;
-privacyText.textContent = privacyPolicyBody;
+$("termsText").textContent = legalTermsBody;
+$("privacyText").textContent = privacyPolicyBody;
 
-document.getElementById("loginButton").addEventListener("click", () => authenticate("/api/auth/login"));
-document.getElementById("registerButton").addEventListener("click", () => authenticate("/api/auth/register"));
+function selectView(view) {
+  const portalActive = view === "portal";
+  $("portalView").hidden = !portalActive;
+  $("statusView").hidden = portalActive;
+  $("portalView").classList.toggle("active", portalActive);
+  $("statusView").classList.toggle("active", !portalActive);
+  $("portalTab").classList.toggle("active", portalActive);
+  $("statusTab").classList.toggle("active", !portalActive);
+  $("portalTab").setAttribute("aria-selected", String(portalActive));
+  $("statusTab").setAttribute("aria-selected", String(!portalActive));
+  history.replaceState(null, "", portalActive ? "#portal" : "#status");
+}
 
-async function authenticate(endpoint) {
-  const username = document.getElementById("username").value.trim();
-  const password = document.getElementById("password").value;
-  const acceptedTerms = document.getElementById("termsAccepted").checked;
-  const acceptedPrivacy = document.getElementById("privacyAccepted").checked;
-  const body = endpoint.endsWith("/register")
-    ? {
-        username,
-        password,
-        acceptedLegalTerms: acceptedTerms,
-        legalTermsVersion,
-        acceptedAtUtc: new Date().toISOString(),
-        acceptedPrivacyPolicy: acceptedPrivacy,
-        privacyPolicyVersion,
-        acceptedPrivacyAtUtc: new Date().toISOString(),
-      }
+$("portalTab").addEventListener("click", () => selectView("portal"));
+$("statusTab").addEventListener("click", () => selectView("status"));
+
+async function authenticate(registering) {
+  const username = $("username").value.trim();
+  const password = $("password").value;
+  const acceptedLegalTerms = $("termsAccepted").checked;
+  const acceptedPrivacyPolicy = $("privacyAccepted").checked;
+  if (!username || !password) {
+    $("authStatus").textContent = "Enter both a username and password.";
+    return;
+  }
+  if (registering && (!acceptedLegalTerms || !acceptedPrivacyPolicy)) {
+    $("authStatus").textContent = "Accept both policies before creating an account.";
+    return;
+  }
+
+  $("authStatus").textContent = registering ? "Creating your account…" : "Signing in…";
+  const now = new Date().toISOString();
+  const body = registering
+    ? { username, password, acceptedLegalTerms, legalTermsVersion, acceptedAtUtc: now, acceptedPrivacyPolicy, privacyPolicyVersion, acceptedPrivacyAtUtc: now }
     : { username, password };
-
-  if (endpoint.endsWith("/register") && (!acceptedTerms || !acceptedPrivacy)) {
-    authStatus.textContent = "You must accept the terms and privacy policy before registering.";
-    return;
+  try {
+    const response = await fetch(registering ? "/api/auth/register" : "/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-TomestonePhone-Version": clientVersion },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Authentication failed.");
+    authToken = payload.authToken;
+    $("authStatus").textContent = `Signed in as ${payload.username}.`;
+    await refreshProfile();
+  } catch (error) {
+    $("authStatus").textContent = error.message || "Authentication failed.";
   }
-
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  const payload = await response.json();
-  if (!response.ok) {
-    authStatus.textContent = payload.error || "Authentication failed.";
-    return;
-  }
-
-  state.token = payload.authToken;
-  authStatus.textContent = `Signed in as ${payload.username}`;
-  await refreshProfile();
 }
 
 async function refreshProfile() {
-  if (!state.token) {
-    return;
-  }
-
-  const response = await fetch("/api/phone/me", {
-    headers: { Authorization: `Bearer ${state.token}` },
-  });
-
+  const response = await fetch("/api/phone/me", { headers: { Authorization: `Bearer ${authToken}`, "X-TomestonePhone-Version": clientVersion } });
   if (!response.ok) {
-    authStatus.textContent = "Session expired.";
+    $("authStatus").textContent = "Your session could not be loaded.";
     return;
   }
-
   const snapshot = await response.json();
-  state.profile = snapshot.profile;
-  profileSummary.textContent = JSON.stringify({
-    username: snapshot.profile.username,
-    displayName: snapshot.profile.displayName,
-    phoneNumber: snapshot.profile.phoneNumber,
-    role: snapshot.profile.role,
-    status: snapshot.profile.status,
-    notificationsMuted: snapshot.profile.notificationsMuted,
-    acceptedLegalTermsVersion: snapshot.profile.acceptedLegalTermsVersion,
-    acceptedPrivacyPolicyVersion: snapshot.profile.acceptedPrivacyPolicyVersion,
-  }, null, 2);
+  const profile = snapshot.profile;
+  const fields = [
+    ["Display name", profile.displayName], ["Username", profile.username], ["Phone number", profile.phoneNumber],
+    ["Role", profile.role], ["Account status", profile.status], ["Notifications", profile.notificationsMuted ? "Muted" : "Enabled"],
+  ];
+  const summary = $("profileSummary");
+  summary.replaceChildren();
+  fields.forEach(([label, value]) => {
+    const dt = document.createElement("dt"); dt.textContent = label;
+    const dd = document.createElement("dd"); dd.textContent = value || "—";
+    summary.append(dt, dd);
+  });
+  $("profileEmpty").hidden = true;
+  summary.hidden = false;
 }
+
+$("loginButton").addEventListener("click", () => authenticate(false));
+$("registerButton").addEventListener("click", () => authenticate(true));
+$("password").addEventListener("keydown", (event) => { if (event.key === "Enter") authenticate(false); });
+
+function formatRate(bytesPerSecond) {
+  if (bytesPerSecond >= 1024 * 1024) return [(bytesPerSecond / 1024 / 1024).toFixed(2), "MB/s"];
+  if (bytesPerSecond >= 1024) return [(bytesPerSecond / 1024).toFixed(1), "KB/s"];
+  return [Math.round(bytesPerSecond).toLocaleString(), "B/s"];
+}
+
+function formatUptime(startedAt) {
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000));
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return days ? `${days}d ${hours}h uptime` : hours ? `${hours}h ${minutes}m uptime` : `${minutes}m uptime`;
+}
+
+function updateChart(value) {
+  history.push(value);
+  history.shift();
+  const peak = Math.max(...history, 1024);
+  const points = history.map((sample, index) => {
+    const x = index * (400 / (history.length - 1));
+    const y = 82 - (sample / peak) * 68;
+    return [x, y];
+  });
+  const line = `M${points.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join("L")}`;
+  $("sparkLine").setAttribute("d", line);
+  $("sparkArea").setAttribute("d", `${line}L400 90L0 90Z`);
+}
+
+function setService(name, operational) {
+  const card = document.querySelector(`[data-service="${name}"]`);
+  card.classList.toggle("operational", operational);
+  card.classList.toggle("degraded", !operational);
+  card.querySelector(".service-state").textContent = operational ? "Operational" : "Unavailable";
+}
+
+async function refreshStatus() {
+  try {
+    const response = await fetch("/api/public/status", { cache: "no-store" });
+    if (!response.ok) throw new Error(`Status ${response.status}`);
+    const data = await response.json();
+    const sampledAt = performance.now();
+    let bytesPerSecond = 0;
+    if (previousBytes !== null && previousSampleTime !== null) {
+      const elapsedSeconds = Math.max(0.1, (sampledAt - previousSampleTime) / 1000);
+      bytesPerSecond = Math.max(0, (data.totalBytesTransferred - previousBytes) / elapsedSeconds);
+    }
+    previousBytes = data.totalBytesTransferred;
+    previousSampleTime = sampledAt;
+
+    const [rate, unit] = formatRate(bytesPerSecond);
+    $("throughputValue").textContent = rate;
+    $("throughputUnit").textContent = unit;
+    $("onlineMembers").textContent = data.onlineMembers.toLocaleString();
+    $("totalMembers").textContent = data.totalMembers.toLocaleString();
+    $("voiceConnections").textContent = data.activeVoiceConnections.toLocaleString();
+    $("lastUpdated").textContent = `Updated ${new Date(data.generatedAtUtc).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}`;
+    $("uptime").textContent = formatUptime(data.startedAtUtc);
+    updateChart(bytesPerSecond);
+
+    Object.entries(data.services).forEach(([name, operational]) => setService(name, operational));
+    const overall = $("overallStatus");
+    overall.className = `overall-status ${data.allOperational ? "healthy" : "degraded"}`;
+    overall.querySelector("strong").textContent = data.allOperational ? "All systems operational" : "Some systems need attention";
+    overall.querySelector("small").textContent = data.allOperational ? "TomestonePhone services are responding normally" : "Live telemetry reports a degraded service";
+  } catch {
+    const overall = $("overallStatus");
+    overall.className = "overall-status degraded";
+    overall.querySelector("strong").textContent = "Status service unavailable";
+    overall.querySelector("small").textContent = "We could not retrieve live telemetry";
+    document.querySelectorAll(".service-card").forEach((card) => {
+      card.className = "service-card degraded";
+      card.querySelector(".service-state").textContent = "Unknown";
+    });
+  }
+}
+
+refreshStatus();
+setInterval(refreshStatus, 1000);
+selectView(location.hash === "#status" ? "status" : "portal");

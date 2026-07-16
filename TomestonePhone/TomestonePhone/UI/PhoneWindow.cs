@@ -128,8 +128,8 @@ public sealed class PhoneWindow : Window
     private string pendingExternalUrl = string.Empty;
     private int renderedMessageCount;
     private bool scrollMessagesToBottom = true;
-    private bool clearComposeOnNextDraw;
     private bool focusComposeOnNextDraw;
+    private bool composeInputWasActive;
     private int composeControlVersion;
     private int friendRequestMessageControlVersion;
     private int supportSubjectControlVersion;
@@ -196,6 +196,7 @@ public sealed class PhoneWindow : Window
     private Vector2 spellPopupPosition;
     private float? pendingContactsScrollRestoreY;
     private float? pendingFriendsScrollRestoreY;
+    private readonly Dictionary<Guid, DateTimeOffset> notificationShownAtUtc = [];
     public PhoneWindow(Service service, Configuration configuration, PhoneState state, TomestonePhoneClient client)
         : base("TomestonePhone###TomestonePhoneMain")
     {
@@ -272,6 +273,16 @@ public sealed class PhoneWindow : Window
         var widthScale = size.X <= 0f ? 1f : size.X / DefaultWindowWidth;
         var heightScale = size.Y <= 0f ? 1f : size.Y / DefaultWindowHeight;
         return Math.Clamp(Math.Min(widthScale, heightScale), MinimumWindowScale, MaximumWindowScale);
+    }
+
+    private float GetTextScale()
+    {
+        return Math.Clamp(this.configuration.TextSize, 0, 2) switch
+        {
+            0 => 0.9f,
+            2 => 1.2f,
+            _ => 1f,
+        };
     }
 
     private float Scale(float value)
@@ -369,7 +380,7 @@ public sealed class PhoneWindow : Window
         this.EnforceAspectRatio();
 
         var uiScale = this.GetUiScale();
-        ImGui.SetWindowFontScale(uiScale);
+        ImGui.SetWindowFontScale(uiScale * this.GetTextScale());
         using var theme = PhoneTheme.Push(this.configuration, uiScale);
         this.DrawPhoneShell();
         this.DrawTopNotchOverlay();
@@ -1133,8 +1144,8 @@ public sealed class PhoneWindow : Window
 
         var draw = ImGui.GetWindowDrawList();
         var pos = ImGui.GetCursorScreenPos();
-        var labelFontSize = this.Scale(15f) * Math.Max(1f, width / 108f);
-        labelFontSize = Math.Min(labelFontSize, this.Scale(25f));
+        var labelFontSize = this.Scale(22f) * this.GetTextScale() * Math.Max(1f, width / 108f);
+        labelFontSize = Math.Min(labelFontSize, this.Scale(30f));
         labelFontSize = this.FitTextToWidth(label, labelFontSize, width - this.Scale(18f));
         var labelSize = this.MeasureTextAtFontSize(label, labelFontSize);
         var iconTop = Math.Max(this.Scale(8f), width * 0.08f);
@@ -1243,8 +1254,8 @@ public sealed class PhoneWindow : Window
             draw.AddText(ImGui.GetFont(), badgeFontSize, new Vector2(badgeCenter.X - badgeTextSize.X * 0.5f, badgeCenter.Y - badgeTextSize.Y * 0.5f), ImGui.GetColorU32(Vector4.One), badgeText);
         }
 
-        var labelFontSize = this.Scale(14f) * Math.Max(1f, cellWidth / 96f);
-        labelFontSize = Math.Min(labelFontSize, this.Scale(21f));
+        var labelFontSize = this.Scale(18f) * this.GetTextScale() * Math.Max(1f, cellWidth / 96f);
+        labelFontSize = Math.Min(labelFontSize, this.Scale(26f));
         labelFontSize = this.FitTextToWidth(label, labelFontSize, cellWidth - this.Scale(10f));
         var labelSize = this.MeasureTextAtFontSize(label, labelFontSize);
         this.DrawOutlinedText(draw, ImGui.GetFont(), labelFontSize, new Vector2(x + (cellWidth - labelSize.X) * 0.5f, iconMax.Y + Math.Max(this.Scale(8f), iconSize * 0.12f)), label);
@@ -1355,16 +1366,15 @@ public sealed class PhoneWindow : Window
 
                     if (isSupportConversation && linkedTicketId is Guid ticketId && isStaff)
                     {
-                        var actionWidth = this.Scale(100f);
-                        var firstRowWidth = Math.Max(this.Scale(140f), ImGui.GetContentRegionAvail().X - actionWidth * 2f - this.Scale(20f));
-                        ImGui.SetNextItemWidth(firstRowWidth);
+                        ImGui.SetNextItemWidth(-1f);
                         ImGui.InputTextWithHint("##support-ticket-participant", "Add by username or phone number", ref this.staffTicketParticipantTarget, 64);
-                        ImGui.SameLine();
+                        var actionSpacing = this.Scale(8f);
+                        var actionWidth = Math.Max(this.Scale(96f), (ImGui.GetContentRegionAvail().X - actionSpacing) * 0.5f);
                         if (this.DrawPhonePillButton("Add Person", new Vector2(actionWidth, this.Scale(32f))))
                         {
                             this.AddSupportTicketParticipant(ticketId, this.staffTicketParticipantTarget, true);
                         }
-                        ImGui.SameLine();
+                        ImGui.SameLine(0f, actionSpacing);
                         if (this.selectedConversationDetail.IsReadOnly)
                         {
                             using var closedDisabled = new ImRaii.DisabledDisposable().Push();
@@ -1400,6 +1410,9 @@ public sealed class PhoneWindow : Window
             {
                 if (scroll.Success && selectedMessages is not null)
                 {
+                    // Enlarge only conversation content. Header controls, pills,
+                    // and the composer retain their normal UI font size.
+                    ImGui.SetWindowFontScale(this.GetUiScale() * this.GetTextScale() * 1.18f);
                     var currentMessages = selectedMessages.Messages;
                     var currentCount = currentMessages.Count;
                     if (currentCount != this.renderedMessageCount)
@@ -1437,12 +1450,6 @@ public sealed class PhoneWindow : Window
                     }
                     else
                     {
-                        if (this.clearComposeOnNextDraw)
-                        {
-                            this.composeMessage = string.Empty;
-                            this.clearComposeOnNextDraw = false;
-                        }
-
                         var helperText = "Enter sends. Shift+Enter adds a new line.";
                         var composeLineHeight = ImGui.GetTextLineHeightWithSpacing();
                         var framePadding = ImGui.GetStyle().FramePadding;
@@ -1469,32 +1476,40 @@ public sealed class PhoneWindow : Window
                             ImGui.Dummy(new Vector2(0f, topSpacer));
                         }
 
-                        if (this.focusComposeOnNextDraw)
-                        {
-                            ImGui.SetKeyboardFocusHere();
-                            this.focusComposeOnNextDraw = false;
-                        }
-                        if (ImGui.InputTextMultiline(
-                                $"##message-compose-{this.composeControlVersion}",
-                                ref this.composeMessage,
-                                1024,
-                                new Vector2(-1f, composeInputHeight),
-                                ImGuiInputTextFlags.NoHorizontalScroll))
-                        {
-                            var inputWrapWidth = Math.Max(this.Scale(120f), ImGui.GetItemRectSize().X - (framePadding.X * 2f) - this.Scale(18f));
-                            var wrappedDraft = this.WrapDraftMessageText(this.composeMessage, inputWrapWidth);
-                            if (!string.Equals(wrappedDraft, this.composeMessage, StringComparison.Ordinal))
-                            {
-                                this.composeMessage = wrappedDraft;
-                            }
-                        }
-                        this.DrawSpellCheckOverlay(SpellFieldCompose, ref this.composeMessage, () => this.composeControlVersion++);
-                        var sendPressed = ImGui.IsItemActive() &&
-                            (ImGui.IsKeyPressed(ImGuiKey.Enter, false) || ImGui.IsKeyPressed(ImGuiKey.KeypadEnter, false));
-                        if (sendPressed && !ImGui.GetIO().KeyShift)
+                        var submitRequested = this.composeInputWasActive
+                            && !ImGui.GetIO().KeyShift
+                            && (ImGui.IsKeyPressed(ImGuiKey.Enter, false) || ImGui.IsKeyPressed(ImGuiKey.KeypadEnter, false));
+                        if (submitRequested)
                         {
                             this.composeMessage = this.composeMessage.TrimEnd('\r', '\n');
                             this.SendComposedMessage(selectedId);
+                            this.composeInputWasActive = false;
+                            this.focusComposeOnNextDraw = true;
+                            ImGui.Dummy(new Vector2(-1f, composeInputHeight));
+                        }
+                        else
+                        {
+                            if (this.focusComposeOnNextDraw)
+                            {
+                                ImGui.SetKeyboardFocusHere();
+                                this.focusComposeOnNextDraw = false;
+                            }
+                            if (ImGui.InputTextMultiline(
+                                    $"##message-compose-{this.composeControlVersion}",
+                                    ref this.composeMessage,
+                                    1024,
+                                    new Vector2(-1f, composeInputHeight),
+                                    ImGuiInputTextFlags.NoHorizontalScroll))
+                            {
+                                var inputWrapWidth = Math.Max(this.Scale(120f), ImGui.GetItemRectSize().X - (framePadding.X * 2f) - this.Scale(18f));
+                                var wrappedDraft = this.WrapDraftMessageText(this.composeMessage, inputWrapWidth);
+                                if (!string.Equals(wrappedDraft, this.composeMessage, StringComparison.Ordinal))
+                                {
+                                    this.composeMessage = wrappedDraft;
+                                }
+                            }
+                            this.composeInputWasActive = ImGui.IsItemActive();
+                            this.DrawSpellCheckOverlay(SpellFieldCompose, ref this.composeMessage, () => this.composeControlVersion++);
                         }
                         ImGui.TextDisabled(helperText);
                         ImGui.SameLine();
@@ -1510,10 +1525,15 @@ public sealed class PhoneWindow : Window
             return;
         }
 
+        var directMatches = this.GetMatchingContacts(this.directMessageTarget).Take(3).ToList();
+        var groupMatches = this.activeMessageFolder == MessageFolder.Regular
+            ? this.GetMatchingContacts(this.groupCreateTargets, this.groupCreateSelectedContacts.Select(contact => contact.Id)).Take(3).ToList()
+            : [];
         var selectedGroupMembersHeight = this.groupCreateSelectedContacts.Count == 0
             ? 0f
             : Math.Min(this.Scale(132f), this.Scale(34f) * this.groupCreateSelectedContacts.Count + this.Scale(28f));
-        using (var compose = ImRaii.Child("messages-compose-card", new Vector2(-1f, this.Scale(196f) + selectedGroupMembersHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+        var inlineMatchesHeight = this.Scale(58f) * (directMatches.Count + groupMatches.Count);
+        using (var compose = ImRaii.Child("messages-compose-card", new Vector2(-1f, this.Scale(196f) + selectedGroupMembersHeight + inlineMatchesHeight), false))
         {
             if (compose.Success)
             {
@@ -1549,9 +1569,9 @@ public sealed class PhoneWindow : Window
                 {
                     this.selectedDirectMessageContact = null;
                 }
-                this.DrawContactSuggestionPopup(
+                this.DrawInlineContactSuggestions(
                     "direct-target-picker",
-                    this.GetMatchingContacts(this.directMessageTarget),
+                    directMatches,
                     "Pick",
                     contact =>
                     {
@@ -1604,9 +1624,9 @@ public sealed class PhoneWindow : Window
                         }, "Creating group...");
                     }
                     ImGui.InputTextWithHint("##group-members", "Start typing a contact, username, or phone number", ref this.groupCreateTargets, 256);
-                    this.DrawContactSuggestionPopup(
+                    this.DrawInlineContactSuggestions(
                         "group-create-contact-picker",
-                        this.GetMatchingContacts(this.groupCreateTargets, this.groupCreateSelectedContacts.Select(contact => contact.Id)),
+                        groupMatches,
                         "Add",
                         contact =>
                         {
@@ -1695,9 +1715,14 @@ public sealed class PhoneWindow : Window
                     : $"{conversation.LastActivityUtc.LocalDateTime:t}  {(conversation.IsGroup ? "Group" : "Direct")}  {summaryStatus}";
                 ImGui.TextDisabled(summaryMeta);
 
-                var deleteAction = conversation.IsGroup
-                    ? (conversation.IsOwner ? ChatModerationAction.DeleteConversation : ChatModerationAction.LeaveConversation)
-                    : ChatModerationAction.HideConversation;
+                var isClosedStaffTicket = this.IsCurrentUserStaff()
+                    && this.IsTicketConversation(conversation)
+                    && !conversation.CanSendMessages;
+                var deleteAction = isClosedStaffTicket
+                    ? ChatModerationAction.HideConversation
+                    : conversation.IsGroup
+                        ? (conversation.IsOwner ? ChatModerationAction.DeleteConversation : ChatModerationAction.LeaveConversation)
+                        : ChatModerationAction.HideConversation;
                 var deleteLabel = deleteAction == ChatModerationAction.LeaveConversation ? "Leave" : "Delete";
                 var openWidth = Math.Max(this.Scale(76f), ImGui.CalcTextSize("Open").X + this.Scale(28f));
                 if (this.DrawPhonePillButton($"Open##{conversation.Id}", new Vector2(openWidth, this.Scale(32f))) && !string.IsNullOrWhiteSpace(this.configuration.AuthToken))
@@ -1895,7 +1920,8 @@ public sealed class PhoneWindow : Window
     }
     private void DrawContacts()
     {
-        using (var add = ImRaii.Child("contacts-search-card", new Vector2(-1f, this.Scale(112f)), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+        var searchCardHeight = (ImGui.GetTextLineHeightWithSpacing() * 2f) + this.Scale(70f);
+        using (var add = ImRaii.Child("contacts-search-card", new Vector2(-1f, searchCardHeight), false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
         {
             if (add.Success)
             {
@@ -1904,7 +1930,7 @@ public sealed class PhoneWindow : Window
                 if (ImGui.InputTextWithHint("##contact-target", "Username or phone number", ref this.contactAddTarget, 64))
                 {
                     var query = this.contactAddTarget.Trim();
-                    if (query.Length < 2 || string.IsNullOrWhiteSpace(this.configuration.AuthToken))
+                    if (query.Length < 1 || string.IsNullOrWhiteSpace(this.configuration.AuthToken))
                     {
                         this.peopleSearchResults = [];
                     }
@@ -2070,36 +2096,72 @@ public sealed class PhoneWindow : Window
 
         var itemMin = ImGui.GetItemRectMin();
         var itemMax = ImGui.GetItemRectMax();
-        var popupHeight = Math.Min(this.Scale(220f), contacts.Count * this.Scale(52f) + this.Scale(12f));
-        ImGui.SetNextWindowPos(new Vector2(itemMin.X, itemMax.Y + this.Scale(2f)));
-        ImGui.SetNextWindowSize(new Vector2(itemMax.X - itemMin.X, popupHeight));
+        var viewport = ImGui.GetMainViewport();
+        var popupWidth = Math.Clamp(itemMax.X - itemMin.X, this.Scale(280f), viewport.WorkSize.X - this.Scale(24f));
+        var popupHeight = Math.Min(this.Scale(320f), contacts.Count * this.Scale(92f) + this.Scale(16f));
+        var popupX = Math.Clamp(itemMin.X, viewport.WorkPos.X + this.Scale(8f), viewport.WorkPos.X + viewport.WorkSize.X - popupWidth - this.Scale(8f));
+        var preferredY = itemMax.Y + this.Scale(4f);
+        var popupY = preferredY + popupHeight <= viewport.WorkPos.Y + viewport.WorkSize.Y
+            ? preferredY
+            : Math.Max(viewport.WorkPos.Y + this.Scale(8f), itemMin.Y - popupHeight - this.Scale(4f));
+        ImGui.SetNextWindowPos(new Vector2(popupX, popupY), ImGuiCond.Always);
+        ImGui.SetNextWindowSize(new Vector2(popupWidth, popupHeight), ImGuiCond.Always);
 
-        using var popup = ImRaii.Popup(popupId);
+        using var popup = ImRaii.Popup(popupId, ImGuiWindowFlags.NoSavedSettings);
         if (!popup.Success)
         {
             return;
         }
 
-        using var pickerList = ImRaii.Child($"contact-picker-{popupId}", new Vector2(0f, 0f), true);
-        if (pickerList.Success)
+        foreach (var contact in contacts)
         {
-            foreach (var contact in contacts)
+            ImGui.TextUnformatted(contact.DisplayName);
+            ImGui.TextDisabled(contact.PhoneNumber);
+            var actionWidth = Math.Max(this.Scale(84f), ImGui.CalcTextSize(actionLabel).X + this.Scale(28f));
+            var maxX = Math.Max(ImGui.GetCursorPosX(), ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X - actionWidth);
+            ImGui.SetCursorPosX(maxX);
+            if (this.DrawPhonePillButton($"{actionLabel}##{popupId}-{contact.Id}", new Vector2(actionWidth, this.Scale(28f))))
             {
-                ImGui.TextUnformatted(contact.DisplayName);
-                ImGui.TextDisabled(contact.PhoneNumber);
-                var actionWidth = Math.Max(this.Scale(84f), ImGui.CalcTextSize(actionLabel).X + this.Scale(28f));
-                var maxX = Math.Max(ImGui.GetCursorPosX(), ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X - actionWidth);
-                ImGui.SetCursorPosX(maxX);
-                if (this.DrawPhonePillButton($"{actionLabel}##{popupId}-{contact.Id}", new Vector2(actionWidth, this.Scale(28f))))
-                {
-                    onSelect(contact);
-                    ImGui.CloseCurrentPopup();
-                    break;
-                }
+                onSelect(contact);
+                ImGui.CloseCurrentPopup();
+                break;
+            }
 
+            ImGui.Separator();
+        }
+    }
+
+    private void DrawInlineContactSuggestions(string controlId, IReadOnlyList<ContactRecord> contacts, string actionLabel, Action<ContactRecord> onSelect)
+    {
+        if (contacts.Count == 0)
+        {
+            return;
+        }
+
+        ImGui.PushID(controlId);
+        for (var index = 0; index < contacts.Count; index++)
+        {
+            var contact = contacts[index];
+            var actionWidth = Math.Max(this.Scale(72f), ImGui.CalcTextSize(actionLabel).X + this.Scale(24f));
+            var rowStart = ImGui.GetCursorPosY();
+            ImGui.TextUnformatted(contact.DisplayName);
+            ImGui.TextDisabled(contact.PhoneNumber);
+            ImGui.SameLine();
+            ImGui.SetCursorPosY(rowStart + this.Scale(8f));
+            ImGui.SetCursorPosX(Math.Max(ImGui.GetCursorPosX(), ImGui.GetWindowContentRegionMax().X - actionWidth));
+            if (this.DrawPhonePillButton($"{actionLabel}##{contact.Id}", new Vector2(actionWidth, this.Scale(30f))))
+            {
+                onSelect(contact);
+                ImGui.PopID();
+                return;
+            }
+
+            if (index < contacts.Count - 1)
+            {
                 ImGui.Separator();
             }
         }
+        ImGui.PopID();
     }
 
     private void TryRestoreChildScroll(ref float? pendingScrollY)
@@ -2209,6 +2271,7 @@ public sealed class PhoneWindow : Window
                         this.pendingFriendsScrollRestoreY = ImGui.GetScrollY();
                         this.QueueUiOperation($"friend-accept-{request.Id}", () => this.client.RespondToFriendRequestAsync(authToken, new RespondFriendRequest(request.Id, true)), updated =>
                         {
+                            this.RemoveFriendRequestNotifications();
                             this.pendingStatus = updated is not null ? "Friend paired" : "That friend request is no longer pending";
                             this.RefreshSnapshot();
                         }, "Accepting friend request...");
@@ -2221,6 +2284,7 @@ public sealed class PhoneWindow : Window
                         this.pendingFriendsScrollRestoreY = ImGui.GetScrollY();
                         this.QueueUiOperation($"friend-decline-{request.Id}", () => this.client.RespondToFriendRequestAsync(authToken, new RespondFriendRequest(request.Id, false)), updated =>
                         {
+                            this.RemoveFriendRequestNotifications();
                             this.pendingStatus = updated is not null ? "Request declined" : "That friend request is no longer pending";
                             this.RefreshSnapshot();
                         }, "Declining friend request...");
@@ -2556,6 +2620,31 @@ public sealed class PhoneWindow : Window
                 ImGui.TextWrapped($"Spellcheck unavailable: {this.spellCheckService.AvailabilityMessage ?? "unknown error"}");
             }
         }
+
+        ImGui.Separator();
+        ImGui.TextDisabled("Text Size");
+        var textSize = Math.Clamp(this.configuration.TextSize, 0, 2);
+        var textSizeLabel = textSize switch
+        {
+            0 => "Small",
+            2 => "Large",
+            _ => "Medium",
+        };
+        ImGui.SetNextItemWidth(-1f);
+        if (ImGui.BeginCombo("##TextSize", textSizeLabel))
+        {
+            for (var index = 0; index < 3; index++)
+            {
+                var label = index switch { 0 => "Small", 1 => "Medium", _ => "Large" };
+                if (ImGui.Selectable(label, index == textSize))
+                {
+                    this.configuration.TextSize = index;
+                    this.SaveConfiguration();
+                }
+            }
+            ImGui.EndCombo();
+        }
+        ImGui.TextDisabled("Changes text throughout the phone, including apps, contacts, settings, and messages.");
 
         ImGui.Separator();
         ImGui.TextDisabled("Voice");
@@ -4445,7 +4534,7 @@ public sealed class PhoneWindow : Window
         if (detail.LinkedSupportTicketId is not null)
         {
             return this.IsCurrentUserStaff()
-                ? this.Scale(136f)
+                ? this.Scale(188f)
                 : this.Scale(78f);
         }
 
@@ -4828,6 +4917,10 @@ public sealed class PhoneWindow : Window
         var identity = this.GetCurrentGameIdentity();
         var submittedComposeMessage = this.composeMessage;
         var submittedEmbedUrl = this.composeEmbedUrl;
+        this.composeMessage = string.Empty;
+        this.composeEmbedUrl = string.Empty;
+        this.composeControlVersion++;
+        this.focusComposeOnNextDraw = true;
         this.QueueUiOperation($"send-message-{conversationId}",
             () => this.client.SendMessageAsync(authToken, new SendMessageRequest(conversationId, body, identity, embeds)),
             sent =>
@@ -4840,22 +4933,21 @@ public sealed class PhoneWindow : Window
             }
 
             this.selectedConversationMessages = new ConversationMessagePage(conversationId, this.selectedConversationMessages?.Messages.Append(sent).ToList() ?? [sent]);
-            if (string.Equals(this.composeMessage, submittedComposeMessage, StringComparison.Ordinal)
-                && string.Equals(this.composeEmbedUrl, submittedEmbedUrl, StringComparison.Ordinal))
-            {
-                this.composeMessage = string.Empty;
-                this.composeEmbedUrl = string.Empty;
-                this.composeControlVersion++;
-                this.clearComposeOnNextDraw = true;
-                this.focusComposeOnNextDraw = true;
-            }
             this.scrollMessagesToBottom = true;
             this.lastConversationRefreshUtc = DateTimeOffset.MinValue;
             if (this.pendingConversationMessagesTask is null)
             {
                 this.pendingConversationMessagesTask = this.client.GetConversationMessagesAsync(this.configuration.AuthToken, conversationId);
             }
-        }, "Sending message...");
+        }, "Sending message...", ex =>
+        {
+            if (string.IsNullOrEmpty(this.composeMessage) && string.IsNullOrEmpty(this.composeEmbedUrl))
+            {
+                this.composeMessage = submittedComposeMessage;
+                this.composeEmbedUrl = submittedEmbedUrl;
+                this.composeControlVersion++;
+            }
+        });
     }
 
     private void SendGif(Guid conversationId, GiphyGifResult gif)
@@ -5002,14 +5094,17 @@ public sealed class PhoneWindow : Window
         var itemMin = ImGui.GetItemRectMin();
         var itemMax = ImGui.GetItemRectMax();
         var itemSize = itemMax - itemMin;
-        var textSize = ImGui.CalcTextSize(visibleLabel);
+        // Pill labels intentionally retain their original size. The global
+        // accessibility text setting applies to content, not compact controls.
+        var pillFontSize = (ImGui.GetFontSize() / this.GetTextScale()) * 0.78f;
+        var textSize = this.MeasureTextAtFontSize(visibleLabel, pillFontSize);
         var textPosition = new Vector2(
             itemMin.X + Math.Max(0f, (itemSize.X - textSize.X) * 0.5f),
             itemMin.Y + Math.Max(0f, (itemSize.Y - textSize.Y) * 0.5f));
 
         var drawList = ImGui.GetWindowDrawList();
         drawList.PushClipRect(itemMin, itemMax, true);
-        drawList.AddText(textPosition, ImGui.GetColorU32(ImGuiCol.Text), visibleLabel);
+        drawList.AddText(ImGui.GetFont(), pillFontSize, textPosition, ImGui.GetColorU32(ImGuiCol.Text), visibleLabel);
         drawList.PopClipRect();
         return clicked;
     }
@@ -5720,6 +5815,29 @@ public sealed class PhoneWindow : Window
 
     private void SyncNotificationWindow()
     {
+        var now = DateTimeOffset.UtcNow;
+        while (this.state.Notifications.Count > 2)
+        {
+            var notification = this.state.Notifications[0];
+            this.state.Notifications.RemoveAt(0);
+            this.notificationShownAtUtc.Remove(notification.Id);
+        }
+
+        foreach (var notification in this.state.Notifications)
+        {
+            this.notificationShownAtUtc.TryAdd(notification.Id, now);
+        }
+
+        var expiredIds = this.state.Notifications
+            .Where(item => now - this.notificationShownAtUtc[item.Id] >= TimeSpan.FromSeconds(2.5))
+            .Select(item => item.Id)
+            .ToHashSet();
+        this.state.Notifications.RemoveAll(item => expiredIds.Contains(item.Id));
+        foreach (var id in expiredIds)
+        {
+            this.notificationShownAtUtc.Remove(id);
+        }
+
         if (this.state.Notifications.Count == 0 || !this.CanShowNotifications())
         {
             this.notificationOverlayWindow.IsOpen = false;
@@ -5729,10 +5847,23 @@ public sealed class PhoneWindow : Window
         this.notificationOverlayWindow.IsOpen = true;
     }
 
+    private void RemoveFriendRequestNotifications()
+    {
+        var removedIds = this.state.Notifications
+            .Where(item => string.Equals(item.Title, "Friend Request", StringComparison.Ordinal))
+            .Select(item => item.Id)
+            .ToHashSet();
+        this.state.Notifications.RemoveAll(item => removedIds.Contains(item.Id));
+        foreach (var id in removedIds)
+        {
+            this.notificationShownAtUtc.Remove(id);
+        }
+    }
+
     private void PrepareNotificationWindow()
     {
         var viewport = ImGui.GetMainViewport();
-        var windowSize = new Vector2(280f, 96f);
+        var windowSize = new Vector2(280f, 96f * Math.Min(2, this.state.Notifications.Count));
         var anchorPos = this.configuration.NotificationAnchor switch
         {
             NotificationAnchor.TopLeft => viewport.Pos + new Vector2(18f, 18f),
@@ -5741,7 +5872,6 @@ public sealed class PhoneWindow : Window
             _ => viewport.Pos + new Vector2(viewport.Size.X - windowSize.X - 18f, viewport.Size.Y - windowSize.Y - 18f),
         };
 
-        var notification = this.state.Notifications[0];
         ImGui.SetNextWindowBgAlpha(0.92f);
         ImGui.SetNextWindowPos(anchorPos, ImGuiCond.Always);
         ImGui.SetNextWindowSize(windowSize, ImGuiCond.Always);
@@ -5755,32 +5885,44 @@ public sealed class PhoneWindow : Window
             return;
         }
 
-        var notification = this.state.Notifications[0];
-        ImGui.TextUnformatted(notification.Title);
-        ImGui.TextWrapped(notification.Body);
-
-        if (ImGui.Button("Open", new Vector2(90f, 26f)))
+        var visibleNotifications = this.state.Notifications.Take(2).ToList();
+        for (var index = 0; index < visibleNotifications.Count; index++)
         {
-            this.IsOpen = true;
-            this.showHomeScreen = false;
-            this.activeTab = notification.Tab;
-            if (notification.IsIncomingCall && this.state.ActiveCall is not null)
+            var notification = visibleNotifications[index];
+            ImGui.PushID(notification.Id.ToString());
+            ImGui.TextUnformatted(notification.Title);
+            ImGui.TextWrapped(notification.Body);
+
+            if (ImGui.Button("Open", new Vector2(90f, 26f)))
             {
-                this.BeginConversationCall(this.state.ActiveCall.ConversationId, this.state.ActiveCall.IsGroup);
+                this.IsOpen = true;
+                this.showHomeScreen = false;
+                this.activeTab = notification.Tab;
+                if (notification.IsIncomingCall && this.state.ActiveCall is not null)
+                {
+                    this.BeginConversationCall(this.state.ActiveCall.ConversationId, this.state.ActiveCall.IsGroup);
+                }
+                else if (notification.Tab == PhoneTab.Messages && notification.TargetId is { } conversationId)
+                {
+                    this.OpenConversation(conversationId);
+                }
+
+                this.state.Notifications.RemoveAll(item => item.Id == notification.Id);
+                this.notificationShownAtUtc.Remove(notification.Id);
             }
-            else if (notification.Tab == PhoneTab.Messages && notification.TargetId is { } conversationId)
+
+            ImGui.SameLine();
+            if (ImGui.Button("Dismiss", new Vector2(90f, 26f)))
             {
-                this.OpenConversation(conversationId);
+                this.state.Notifications.RemoveAll(item => item.Id == notification.Id);
+                this.notificationShownAtUtc.Remove(notification.Id);
             }
 
-            this.state.Notifications.RemoveAt(0);
-        }
-
-        ImGui.SameLine();
-
-        if (ImGui.Button("Dismiss", new Vector2(90f, 26f)))
-        {
-            this.state.Notifications.RemoveAt(0);
+            ImGui.PopID();
+            if (index < visibleNotifications.Count - 1)
+            {
+                ImGui.Separator();
+            }
         }
     }
 
@@ -5807,7 +5949,8 @@ public sealed class PhoneWindow : Window
         var height = this.state.ActiveCall is { IsIncoming: true }
             ? this.Scale(300f)
             : this.Scale(250f);
-        ImGui.SetNextWindowSize(new Vector2(this.Scale(320f), height), ImGuiCond.Appearing);
+        ImGui.SetNextWindowSize(new Vector2(this.Scale(390f), height), ImGuiCond.Appearing);
+        ImGui.SetNextWindowSizeConstraints(this.Scale(320f, 220f), this.Scale(760f, 760f));
     }
 
     private void DrawCallWindowContent()
@@ -5888,6 +6031,11 @@ public sealed class PhoneWindow : Window
                 this.LeaveCurrentCall();
             }
         }
+    }
+
+    private static string FormatLocalTimestamp(DateTimeOffset timestamp)
+    {
+        return timestamp.ToLocalTime().ToString("MMM d, yyyy h:mm tt");
     }
 
     private void DrawCopyableText(string text, string copiedValue, string copiedStatus, bool disabled = false)
@@ -6277,8 +6425,8 @@ public sealed class PhoneWindow : Window
                 var ticket = orderedTickets[index];
                 ImGui.TextUnformatted(ticket.Subject);
                 var ticketTimestamp = ticket.Status == SupportTicketStatus.Closed && ticket.ClosedAtUtc is not null
-                    ? $"Closed {ticket.ClosedAtUtc.Value.LocalDateTime:g}"
-                    : $"{ticket.Status}  {ticket.CreatedAtUtc.LocalDateTime:g}";
+                    ? $"Closed {FormatLocalTimestamp(ticket.ClosedAtUtc.Value)}"
+                    : $"{ticket.Status}  {FormatLocalTimestamp(ticket.CreatedAtUtc)}";
                 ImGui.TextDisabled(ticketTimestamp);
                 if (!string.IsNullOrWhiteSpace(ticket.Body))
                 {
@@ -6463,8 +6611,8 @@ public sealed class PhoneWindow : Window
             var ticket = tickets[index];
             ImGui.TextUnformatted(ticket.Subject);
             var ticketTimestamp = ticket.Status == SupportTicketStatus.Closed && ticket.ClosedAtUtc is not null
-                ? $"Closed {ticket.ClosedAtUtc.Value.LocalDateTime:g}"
-                : $"Opened {ticket.CreatedAtUtc.LocalDateTime:g}";
+                ? $"Closed {FormatLocalTimestamp(ticket.ClosedAtUtc.Value)}"
+                : $"Opened {FormatLocalTimestamp(ticket.CreatedAtUtc)}";
             this.DrawWrappedDisabledText($"{ticket.OwnerDisplayName}  {ticket.Status}  {ticketTimestamp}");
             if (!string.IsNullOrWhiteSpace(ticket.Body))
             {
@@ -7858,7 +8006,7 @@ public sealed class PhoneWindow : Window
             : base("Call###TomestonePhoneCallPopup")
         {
             this.parent = parent;
-            this.Flags = ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings;
+            this.Flags = ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings;
             this.IsOpen = false;
             this.RespectCloseHotkey = false;
         }

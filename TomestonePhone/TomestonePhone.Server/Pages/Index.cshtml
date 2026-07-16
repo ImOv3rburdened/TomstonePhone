@@ -1,0 +1,115 @@
+@page
+@{
+    Layout = null;
+}
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#090d18" />
+    <meta name="description" content="Live operational status for the TomestonePhone service." />
+    <title>TomestonePhone Portal</title>
+    <link rel="stylesheet" href="/site.css" asp-append-version="true" />
+</head>
+<body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+    <main class="shell">
+        <nav class="nav" aria-label="Primary navigation">
+            <a class="brand" href="/" aria-label="TomestonePhone home">
+                <span class="brand-mark" aria-hidden="true">T</span>
+                <span>TomestonePhone</span>
+            </a>
+            <div class="nav-tabs" role="tablist" aria-label="Website sections">
+                <button class="nav-tab active" id="portalTab" type="button" role="tab" aria-selected="true" aria-controls="portalView">Account Portal</button>
+                <button class="nav-tab" id="statusTab" type="button" role="tab" aria-selected="false" aria-controls="statusView"><span class="pulse"></span> Server Status</button>
+            </div>
+        </nav>
+
+        <div id="portalView" class="page-view active" role="tabpanel" aria-labelledby="portalTab">
+        <section class="portal-hero">
+            <div class="eyebrow">YOUR LINKPEARL, REIMAGINED</div>
+            <h1>Your TomestonePhone<br /><span>account portal.</span></h1>
+            <p class="lede">Create an account, sign in securely, and review the service policies connected to your account.</p>
+        </section>
+
+        <section class="portal-grid">
+            <article class="portal-card auth-card">
+                <div class="card-heading"><div><div class="eyebrow">ACCOUNT ACCESS</div><h2>Welcome</h2></div><span class="secure-chip">Secure connection</span></div>
+                <div class="form-grid">
+                    <label><span>Username</span><input id="username" type="text" autocomplete="username" maxlength="64" placeholder="Enter your username" /></label>
+                    <label><span>Password</span><input id="password" type="password" autocomplete="current-password" maxlength="128" placeholder="Enter your password" /></label>
+                </div>
+                <div class="policy-checks">
+                    <label class="check-row"><input id="termsAccepted" type="checkbox" /><span>I have read and agree to the Terms of Service.</span></label>
+                    <label class="check-row"><input id="privacyAccepted" type="checkbox" /><span>I have read and agree to the Privacy Policy.</span></label>
+                </div>
+                <div class="auth-actions"><button id="loginButton" class="primary-action" type="button">Sign in</button><button id="registerButton" class="secondary-action" type="button">Create account</button></div>
+                <p id="authStatus" class="auth-status" role="status" aria-live="polite">Not signed in.</p>
+            </article>
+
+            <article class="portal-card profile-card">
+                <div class="eyebrow">CURRENT SESSION</div><h2>Account summary</h2>
+                <div id="profileEmpty" class="profile-empty"><span class="profile-avatar">T</span><strong>No active session</strong><small>Sign in to view your TomestonePhone account details.</small></div>
+                <dl id="profileSummary" class="profile-summary" hidden></dl>
+            </article>
+        </section>
+
+        <section class="policies-section">
+            <div class="section-heading"><div><div class="eyebrow">TRANSPARENCY</div><h2>Terms and privacy</h2></div><span>Always available for review</span></div>
+            <div class="policy-grid">
+                <details class="policy-card"><summary><span><b>Terms of Service</b><small>Version 2026-03-20</small></span><i>+</i></summary><div id="termsText" class="policy-copy"></div></details>
+                <details class="policy-card"><summary><span><b>Privacy Policy</b><small>Version 2026-05-08</small></span><i>+</i></summary><div id="privacyText" class="policy-copy"></div></details>
+            </div>
+        </section>
+        </div>
+
+        <div id="statusView" class="page-view" role="tabpanel" aria-labelledby="statusTab" hidden>
+        <section class="hero">
+            <div class="eyebrow">AETHER COMMUNICATION NETWORK</div>
+            <h1>Connected across worlds.<br /><span>Monitored every second.</span></h1>
+            <p class="lede">Live service health and network activity for the TomestonePhone communications platform.</p>
+            <div id="overallStatus" class="overall-status loading" role="status" aria-live="polite">
+                <span class="status-orb"></span>
+                <div><strong>Checking the network</strong><small>Waiting for live server telemetry…</small></div>
+            </div>
+        </section>
+
+        <section class="metrics" aria-label="Live server metrics">
+            <article class="metric-card featured">
+                <div class="metric-label">Current throughput</div>
+                <div class="metric-value"><span id="throughputValue">—</span><span id="throughputUnit" class="unit">KB/s</span></div>
+                <div class="sparkline" aria-hidden="true"><svg viewBox="0 0 400 90" preserveAspectRatio="none"><defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#64e6bd" stop-opacity=".35"/><stop offset="1" stop-color="#64e6bd" stop-opacity="0"/></linearGradient></defs><path id="sparkArea" class="spark-area" d="M0 90L400 90Z"/><path id="sparkLine" class="spark-line" d="M0 82L400 82"/></svg></div>
+                <div class="metric-note">HTTP and live voice traffic · updated every second</div>
+            </article>
+            <article class="metric-card">
+                <div class="metric-icon people" aria-hidden="true">◎</div>
+                <div class="metric-label">Members online</div>
+                <div class="metric-value"><span id="onlineMembers">—</span></div>
+                <div class="metric-note"><span id="totalMembers">—</span> registered members</div>
+            </article>
+            <article class="metric-card">
+                <div class="metric-icon voice" aria-hidden="true">◖</div>
+                <div class="metric-label">Voice connections</div>
+                <div class="metric-value"><span id="voiceConnections">—</span></div>
+                <div class="metric-note">Active relay participants</div>
+            </article>
+        </section>
+
+        <section class="services-section">
+            <div class="section-heading"><div><div class="eyebrow">SYSTEMS</div><h2>Service health</h2></div><span id="lastUpdated">Connecting…</span></div>
+            <div class="service-grid">
+                <article class="service-card" data-service="api"><span class="service-glyph">API</span><div><strong>Phone API</strong><small>Authentication, chat, and calls</small></div><span class="service-state">Checking</span></article>
+                <article class="service-card" data-service="database"><span class="service-glyph">DB</span><div><strong>Data service</strong><small>Accounts and conversations</small></div><span class="service-state">Checking</span></article>
+                <article class="service-card" data-service="realtime"><span class="service-glyph">RT</span><div><strong>Realtime events</strong><small>SignalR notification delivery</small></div><span class="service-state">Checking</span></article>
+                <article class="service-card" data-service="voice"><span class="service-glyph">VC</span><div><strong>Voice relay</strong><small>Encrypted call transport</small></div><span class="service-state">Checking</span></article>
+            </div>
+        </section>
+        </div>
+
+        <footer><span>TomestonePhone Network Operations</span><span id="uptime">Uptime —</span></footer>
+    </main>
+    <script src="/site.js" asp-append-version="true"></script>
+</body>
+</html>
